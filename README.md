@@ -29,8 +29,8 @@
     ```env
     # 你的 Telegram Bot Token (从 @BotFather 获取)
     BOT_TOKEN=YOUR_BOT_TOKEN_HERE
-    # 你的自建 Bot API 服务器地址 (例如: http://127.0.0.1:9081)
-    BOT_API_HOST=http://127.0.0.1:9081
+    # 你的自建 Bot API 服务器地址 (例如: http://127.0.0.1:8081)
+    BOT_API_HOST=http://127.0.0.1:8081
     # 本地下载保存目录
     DOWNLOAD_DIR=./downloads/
     ```
