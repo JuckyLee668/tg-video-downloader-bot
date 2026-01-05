@@ -1,6 +1,6 @@
 # Telegram Media Downloader (Node.js · Bot API 模式)
 
-基于 Node.js 的 Telegram 媒体下载器，通过 **远程 Telegram Bot API 服务器** 接收消息并下载媒体文件。
+基于 Node.js 的 Telegram 媒体下载器，通过 **远程 Telegram Bot API 服务器** (查看[编译telegram-bot-api并使用](编译telegram-bot-api并使用.md))接收消息并下载媒体文件。
 
 ## 功能特性
 
