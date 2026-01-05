@@ -1,0 +1,10 @@
+node_modules/
+downloads/
+*.log
+.env
+config.local.yaml
+*.session
+*.session-journal
+.DS_Store
+dist/
+download_history.json
