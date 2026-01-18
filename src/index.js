@@ -120,28 +120,19 @@ class TelegramMediaDownloader {
   }
 
   /**
-   * Start periodic processor for forwarded queue items
+   * Start continuous processor for forwarded queue items (one-time check and continuous processing until done)
    */
   startForwardedQueueProcessor() {
-    // Run initial processing asynchronously to avoid blocking startup
+    // Run continuous processing asynchronously to avoid blocking startup
     setImmediate(async () => {
       try {
-        await this.processPendingForwardedDownloads();
+        await this.continuousProcessPendingForwardedDownloads();
       } catch (error) {
-        logger.error('初始处理转发队列失败:', error);
+        logger.error('启动连续处理转发队列失败:', error);
       }
     }); // Execute immediately but in the next tick to avoid blocking startup
 
-    // Then run periodically (every 10 minutes instead of 30 seconds to reduce overhead)
-    this.forwardedQueueProcessorInterval = setInterval(async () => {
-      try {
-        await this.processPendingForwardedDownloads();
-      } catch (error) {
-        logger.error('处理转发队列时出错:', error);
-      }
-    }, 600000); // Check every 10 minutes (600000ms) instead of 30 seconds
-
-    logger.info('转发队列处理器已启动 (每10分钟检查一次)');
+    logger.info('转发队列连续处理器已启动 (一次性检查并持续处理直到完成)');
   }
 
   /**
@@ -254,45 +245,50 @@ class TelegramMediaDownloader {
       if (effectiveMessageId) {
         // Check if this item exists in the forwarded queue and remove if completed
         if (this.forwardedQueue.isInQueue(effectiveChatId, effectiveMessageId)) {
-          if (status === 'completed') {
+          if (status === 'completed' || status === 'skipped') {
             // Check if file actually exists and has content before removing from queue
+            // For skipped files, we should also remove them from queue since they were intentionally skipped
             try {
-              const fs = await import('fs');
-              if (filePath && fs.existsSync(filePath)) {
-                const stats = fs.statSync(filePath);
-                if (stats.size > 0) {
-                  // File exists and has content, update queue status and remove
-                  this.forwardedQueue.updateStatus(effectiveChatId, effectiveMessageId, 'completed');
-                  this.forwardedQueue.removeFromQueue(effectiveChatId, effectiveMessageId);
-                  logger.info(`转发文件下载完成，已从待下载队列移除: ${effectiveChatId}_${effectiveMessageId} (文件大小: ${this.formatBytes(stats.size)})`);
+              if (status === 'completed') {
+                // For completed files, verify that the file exists and has content
+                const fs = await import('fs');
+                if (filePath && fs.existsSync(filePath)) {
+                  const stats = fs.statSync(filePath);
+                  if (stats.size > 0) {
+                    // File exists and has content, update queue status and remove
+                    this.forwardedQueue.updateStatus(effectiveChatId, effectiveMessageId, 'completed');
+                    this.forwardedQueue.removeFromQueue(effectiveChatId, effectiveMessageId);
+                    logger.info(`转发文件${status === 'completed' ? '下载完成' : '已跳过'}, 已从待下载队列移除: ${effectiveChatId}_${effectiveMessageId} (文件大小: ${this.formatBytes(stats.size)})`);
+                  } else {
+                    logger.warn(`转发文件${status === 'completed' ? '下载完成但' : ''}大小为0，保留在队列中: ${effectiveChatId}_${effectiveMessageId}`);
+                    // Keep in queue for possible retry
+                    this.forwardedQueue.updateStatus(effectiveChatId, effectiveMessageId, 'pending');
+                  }
                 } else {
-                  logger.warn(`转发文件下载完成但大小为0，保留在队列中: ${effectiveChatId}_${effectiveMessageId}`);
+                  logger.warn(`转发文件不存在，保留在队列中: ${effectiveChatId}_${effectiveMessageId}`);
                   // Keep in queue for possible retry
                   this.forwardedQueue.updateStatus(effectiveChatId, effectiveMessageId, 'pending');
                 }
               } else {
-                logger.warn(`转发文件不存在，保留在队列中: ${effectiveChatId}_${effectiveMessageId}`);
-                // Keep in queue for possible retry
-                this.forwardedQueue.updateStatus(effectiveChatId, effectiveMessageId, 'pending');
+                // For skipped files (already exists in history), we can safely remove from queue
+                this.forwardedQueue.updateStatus(effectiveChatId, effectiveMessageId, 'completed');
+                this.forwardedQueue.removeFromQueue(effectiveChatId, effectiveMessageId);
+                logger.info(`转发文件已跳过（已存在），已从待下载队列移除: ${effectiveChatId}_${effectiveMessageId}`);
               }
             } catch (error) {
               logger.error(`检查转发文件状态时出错: ${effectiveChatId}_${effectiveMessageId}`, error);
-              // Keep in queue for possible retry
-              this.forwardedQueue.updateStatus(effectiveChatId, effectiveMessageId, 'pending');
-            }
-          } else {
-            // For failed downloads, decide whether to keep in queue or remove based on error type
-            const error = data.error || data.errorDetails?.message;
-            const isFileIdError = error?.includes('wrong file_id') || error?.includes('temporarily unavailable');
-
-            if (isFileIdError) {
-              // File ID is invalid, remove from queue permanently
-              this.forwardedQueue.removeFromQueue(effectiveChatId, effectiveMessageId);
-              logger.warn(`转发文件ID无效，已从队列移除: ${effectiveChatId}_${effectiveMessageId} (错误: ${error || 'unknown'})`);
-            } else {
-              // Other error, keep in queue to retry
-              this.forwardedQueue.updateStatus(effectiveChatId, effectiveMessageId, 'pending');
-              logger.warn(`转发文件下载失败，保留在队列中重试: ${effectiveChatId}_${effectiveMessageId} (状态: ${status})`);
+              if (status === 'completed') {
+                // For completed files, if there's an error checking file status, still remove from queue
+                // since the download completed successfully (otherwise it would be 'failed' status)
+                this.forwardedQueue.updateStatus(effectiveChatId, effectiveMessageId, 'completed');
+                this.forwardedQueue.removeFromQueue(effectiveChatId, effectiveMessageId);
+                logger.info(`转发文件${status === 'completed' ? '下载完成' : '已跳过'}, 已从待下载队列移除 (错误检查): ${effectiveChatId}_${effectiveMessageId}`);
+              } else {
+                // For skipped files, we can still safely remove from queue
+                this.forwardedQueue.updateStatus(effectiveChatId, effectiveMessageId, 'completed');
+                this.forwardedQueue.removeFromQueue(effectiveChatId, effectiveMessageId);
+                logger.info(`转发文件已跳过（已存在），已从待下载队列移除 (错误检查): ${effectiveChatId}_${effectiveMessageId}`);
+              }
             }
           }
         }
@@ -1062,6 +1058,60 @@ class TelegramMediaDownloader {
       }
     }
     logger.info('转发队列处理完成');
+  }
+
+  /**
+   * Continuous processor for pending forwarded downloads (runs until queue is empty)
+   * This processes the forwarded queue continuously until there are no more pending items,
+   * rather than running periodically at intervals
+   */
+  async continuousProcessPendingForwardedDownloads() {
+    logger.info('开始连续处理转发队列...');
+
+    // Process until there are no more pending items
+    let hasPendingItems = true;
+    let cycleCount = 0;
+
+    while (hasPendingItems) {
+      cycleCount++;
+      logger.debug(`连续处理循环 #${cycleCount}`);
+
+      const forwardedQueueStatus = this.getForwardedQueueStatus();
+      logger.debug(`转发队列状态 (循环#${cycleCount}): 总共 ${forwardedQueueStatus.total}, pending: ${forwardedQueueStatus.pending}, downloading: ${forwardedQueueStatus.downloading}`);
+
+      // Check if there are any pending items to process
+      const pendingItems = forwardedQueueStatus.items.filter(item => item.status === 'pending');
+      const downloadingItems = forwardedQueueStatus.items.filter(item => item.status === 'downloading');
+
+      logger.debug(`循环#${cycleCount}发现: ${pendingItems.length} 个待处理项目, ${downloadingItems.length} 个下载中项目`);
+
+      if (pendingItems.length === 0 && downloadingItems.length === 0) {
+        logger.info(`连续处理完成，共执行 ${cycleCount} 个循环`);
+        break;
+      }
+
+      // Process all pending items in this iteration
+      await this.processPendingForwardedDownloads();
+
+      // Brief pause to avoid excessive CPU usage
+      await new Promise(resolve => setTimeout(resolve, 2000)); // 2秒间隔
+
+      // Refresh the queue status to see if we still have items to process
+      const updatedQueueStatus = this.getForwardedQueueStatus();
+      const hasRemainingPending = updatedQueueStatus.items.some(item => item.status === 'pending');
+      const hasRemainingDownloading = updatedQueueStatus.items.some(item => item.status === 'downloading');
+
+      // Continue if there are still items to process (either pending or downloading)
+      const hasMoreItems = hasRemainingPending || hasRemainingDownloading;
+
+      if (hasMoreItems) {
+        logger.debug(`循环#${cycleCount}后仍有 ${updatedQueueStatus.pending} 个待处理和 ${updatedQueueStatus.downloading} 个下载中项目，继续处理...`);
+      } else {
+        logger.info(`转发队列中没有更多待处理项目，连续处理结束，总共执行了 ${cycleCount} 个循环`);
+      }
+
+      hasPendingItems = hasMoreItems;
+    }
   }
 
   /**
