@@ -36,6 +36,8 @@ export class MessageRateLimiter {
       const waitTime = retryAfter - Date.now();
       this.logger.debug(`等待 ${waitTime}ms 后重试发送消息到 ${chatId}`);
       await this.sleep(waitTime);
+      // 清除重试记录
+      this.retryDelays.delete(chatId);
     }
 
     // 限流检查（传入 chatId 以检查单聊限制）
@@ -48,43 +50,64 @@ export class MessageRateLimiter {
     } catch (error) {
       // 处理 429 错误（Too Many Requests）
       if (error.response?.error_code === 429 || error.code === 'ETELEGRAM' && error.response?.statusCode === 429) {
-        const retryAfter = error.response?.parameters?.retry_after || 
-                          error.response?.body?.parameters?.retry_after || 
+        const retryAfterValue = error.response?.parameters?.retry_after ||
+                          error.response?.body?.parameters?.retry_after ||
                           5;
-        const waitTime = retryAfter * 1000; // 转换为毫秒
-        
-        this.logger.warn(`收到 429 限流错误，将在 ${retryAfter} 秒后重试 (chatId: ${chatId})`);
-        
-        // 记录重试时间（增加一些缓冲时间）
-        this.retryDelays.set(chatId, Date.now() + waitTime + 500);
-        
+        const waitTime = retryAfterValue * 1000; // 转换为毫秒
+
+        this.logger.warn(`收到 429 限流错误，等待 ${retryAfterValue} 秒后重试 (chatId: ${chatId})`);
+
+        // 记录重试时间（增加缓冲时间）
+        this.retryDelays.set(chatId, Date.now() + waitTime + 1000);
+
         // 等待后重试
-        await this.sleep(waitTime + 500); // 额外 500ms 缓冲
-        
+        await this.sleep(waitTime + 1000);
+
+        // 清除重试记录
+        this.retryDelays.delete(chatId);
+
         // 再次限流检查
         await this.waitForRateLimit(chatId);
-        
+
         // 重试发送
         try {
           const result = await bot.sendMessage(chatId, text, options);
           this.recordMessage(chatId);
           this.logger.info(`重试发送消息成功 (chatId: ${chatId})`);
-          // 清除重试记录
-          this.retryDelays.delete(chatId);
           return result;
         } catch (retryError) {
-          // 如果重试仍然失败，可能是更严重的限流
+          // 如果重试仍然失败，等待更长时间
           if (retryError.response?.error_code === 429 || retryError.code === 'ETELEGRAM' && retryError.response?.statusCode === 429) {
-            const newRetryAfter = retryError.response?.parameters?.retry_after || 
-                                 retryError.response?.body?.parameters?.retry_after || 
+            const newRetryAfter = retryError.response?.parameters?.retry_after ||
+                                 retryError.response?.body?.parameters?.retry_after ||
                                  10;
-            this.retryDelays.set(chatId, Date.now() + newRetryAfter * 1000);
-            this.logger.error(`重试后仍收到 429 错误，将在 ${newRetryAfter} 秒后再次重试 (chatId: ${chatId})`);
+            const newWaitTime = newRetryAfter * 1000;
+
+            this.logger.error(`重试后仍收到 429 错误，等待 ${newRetryAfter} 秒 (chatId: ${chatId})`);
+
+            // 等待更长时间
+            await this.sleep(newWaitTime + 2000);
+
+            // 再次尝试（这是最后一次尝试）
+            try {
+              // 先检查限流
+              await this.waitForRateLimit(chatId);
+
+              const finalResult = await bot.sendMessage(chatId, text, options);
+              this.recordMessage(chatId);
+              this.logger.info(`第三次尝试发送消息成功 (chatId: ${chatId})`);
+              return finalResult;
+            } catch (finalError) {
+              // 如果仍然失败，设置延迟并抛出
+              this.retryDelays.set(chatId, Date.now() + newWaitTime + 5000);
+              this.logger.error(`发送消息最终失败 (chatId: ${chatId}):`, finalError.message);
+              throw finalError;
+            }
           }
           throw retryError;
         }
       }
-      
+
       // 其他错误直接抛出
       throw error;
     }

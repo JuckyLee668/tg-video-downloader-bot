@@ -74,6 +74,9 @@ class TelegramMediaDownloader {
       this.downloadManager = new DownloadManager(this.config, logger, this.apiClient, this.downloadHistory);
       await this.downloadManager.init();
 
+      // 恢复未完成的下载任务（断点续传）
+      await this.restoreIncompleteDownloads();
+
       // 设置下载完成监听
       this.setupDownloadCompleteListener();
 
@@ -105,15 +108,19 @@ class TelegramMediaDownloader {
    * 设置下载完成监听器
    */
   setupDownloadCompleteListener() {
+    // 消息发送队列（避免同时发送多个消息）
+    this.messageQueue = [];
+    this.isProcessingMessages = false;
+
     this.downloadManager.on('complete', async (data) => {
       const { taskId, filePath, status, chatId, fileName } = data;
       const taskInfo = this.downloadTasks.get(taskId);
-      
+
       // 使用 taskInfo 或 data 中的信息
       const finalChatId = taskInfo?.chatId || chatId;
       const finalFileName = taskInfo?.fileName || fileName || '文件';
       const isPrivateChat = taskInfo?.isPrivateChat || false;
-      
+
       // 如果没有 chatId，无法发送消息
       if (!finalChatId) {
         logger.warn(`无法发送完成消息：缺少 chatId (taskId: ${taskId})`);
@@ -122,41 +129,84 @@ class TelegramMediaDownloader {
         }
         return;
       }
-      
+
       const bot = this.apiClient.getBot();
-      
-      // 只在私聊时发送完成消息（使用限流器）
+
+      // 只在私聊时发送完成消息
       if (isPrivateChat) {
-        try {
-          if (status === 'completed') {
-            await this.messageRateLimiter.sendMessage(
-              bot,
-              finalChatId,
-              `✅ 下载完成：${finalFileName}\n📁 保存路径：${filePath || '未知'}`
-            );
-          } else if (status === 'skipped') {
-            await this.messageRateLimiter.sendMessage(
-              bot,
-              finalChatId,
-              `⏭️ 文件已存在，已跳过：${finalFileName}`
-            );
-          } else if (status === 'failed') {
-            await this.messageRateLimiter.sendMessage(
-              bot,
-              finalChatId,
-              `❌ 下载失败：${finalFileName}`
-            );
-          }
-        } catch (error) {
-          logger.error('发送完成消息失败:', error);
-        }
+        // 将消息添加到队列
+        this.messageQueue.push({
+          bot,
+          chatId: finalChatId,
+          status,
+          filePath,
+          fileName: finalFileName,
+          error: data.error,
+          errorDetails: data.errorDetails
+        });
+
+        // 启动消息处理队列
+        this.processMessageQueue();
       }
-      
+
       // 清理任务信息
       if (taskInfo) {
         this.downloadTasks.delete(taskId);
       }
     });
+  }
+
+  /**
+   * 处理消息发送队列
+   */
+  async processMessageQueue() {
+    if (this.isProcessingMessages) return;
+    this.isProcessingMessages = true;
+
+    while (this.messageQueue.length > 0) {
+      const item = this.messageQueue.shift();
+      const { bot, chatId, status, filePath, fileName, error, errorDetails } = item;
+
+      // 消息之间增加间隔，避免触发限流
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      try {
+        let text;
+        if (status === 'completed') {
+          text = `✅ 下载完成：${fileName}\n📁 保存路径：${filePath || '未知'}`;
+        } else if (status === 'skipped') {
+          text = `⏭️ 文件已存在，已跳过：${fileName}`;
+        } else if (status === 'failed') {
+          let errorMessage = '';
+          const errorDetail = error || errorDetails?.message || '';
+
+          if (errorDetail.includes('wrong file_id') || errorDetail.includes('temporarily unavailable')) {
+            errorMessage = '\n\n⚠️ 文件在 Telegram 服务器上已不可用，可能已被删除或过期。';
+          } else if (errorDetail.includes('ENOENT')) {
+            errorMessage = '\n\n⚠️ 文件保存失败，请检查保存路径权限。';
+          } else if (errorDetail.includes('timeout') || errorDetail.includes('超时')) {
+            errorMessage = '\n\n⚠️ 下载超时，请稍后重试。';
+          } else if (errorDetail) {
+            errorMessage = `\n\n错误信息：${errorDetail}`;
+          }
+          text = `❌ 下载失败：${fileName}${errorMessage}`;
+        }
+
+        await this.messageRateLimiter.sendMessage(bot, chatId, text);
+      } catch (err) {
+        logger.error('发送完成消息失败:', err);
+        // 如果失败，将消息放回队列末尾（最多重试3次）
+        if (item.retryCount < 3) {
+          item.retryCount = (item.retryCount || 0) + 1;
+          this.messageQueue.push(item);
+          logger.info(`消息发送失败，放回队列重试 (${item.retryCount}/3)`);
+        } else {
+          logger.error(`消息发送失败，已重试3次，放弃: ${fileName}`);
+        }
+      }
+    }
+
+    this.isProcessingMessages = false;
   }
 
 
@@ -532,6 +582,87 @@ class TelegramMediaDownloader {
     // Bot API 模式下，历史消息需要通过其他方式获取
     // 这里保留接口以便未来扩展
     logger.info('Bot API 模式：历史消息需要通过消息监听或远程服务器接口获取');
+  }
+
+  /**
+   * 恢复未完成的下载任务（断点续传）
+   * 在程序启动时调用，检查历史记录中状态为 'in_progress' 的任务
+   */
+  async restoreIncompleteDownloads() {
+    // 首先清理可能无效的记录（文件不存在或记录过期）
+    await this.downloadHistory.cleanInvalidRecords();
+
+    const incomplete = this.downloadHistory.getIncompleteDownloads();
+
+    if (incomplete.length === 0) {
+      logger.info('没有未完成的下载任务');
+      return;
+    }
+
+    logger.info(`发现 ${incomplete.length} 个未完成的下载任务，开始恢复...`);
+
+    for (const task of incomplete) {
+      try {
+        // 检查本地文件是否存在
+        const fs = await import('fs');
+        if (!task.filePath || !fs.existsSync(task.filePath)) {
+          logger.warn(`文件不存在，无法恢复: ${task.filePath}`);
+          // 从历史记录中移除这个无效记录
+          const key = `file_${task.fileId}`;
+          delete this.downloadHistory.history[key];
+          this.downloadHistory.saveHistory();
+          continue;
+        }
+
+        const fileStats = fs.statSync(task.filePath);
+        const localFileSize = fileStats.size;
+
+        logger.info(`恢复下载任务: ${task.fileName || '文件'} (本地: ${this.formatBytes(localFileSize)}, 历史记录: ${this.formatBytes(task.downloadedBytes)})`);
+
+        // 创建模拟消息对象（只需要 fileId 和基本信息）
+        const mockMessage = {
+          message_id: task.messageId,
+          document: task.fileId ? { file_id: task.fileId } : undefined,
+          video: task.fileId ? { file_id: task.fileId } : undefined,
+          date: Math.floor(Date.now() / 1000) // 使用当前时间作为近似值
+        };
+
+        // 添加到下载队列
+        await this.downloadManager.addDownloadTask({
+          message: mockMessage,
+          chatId: task.chatId,
+          chatTitle: `恢复任务_${task.chatId}`,
+          mediaType: 'video', // 默认使用 video，实际下载时会从消息中获取
+          fileId: task.fileId,
+          fileName: task.fileName || '恢复下载',
+          needRefreshFileId: true // 标记需要刷新 file_id（因为服务器可能已删除原文件）
+        });
+
+        logger.info(`已加入恢复队列: ${task.fileName || task.filePath} (将尝试刷新 file_id)`);
+      } catch (error) {
+        logger.error(`恢复下载任务失败: ${task.filePath}`, error);
+        // 如果是 file_id 无效错误，清理该记录
+        if (error.message?.includes('wrong file_id') || error.message?.includes('temporarily unavailable')) {
+          const key = `file_${task.fileId}`;
+          delete this.downloadHistory.history[key];
+          this.downloadHistory.saveHistory();
+          logger.warn(`已清理无效的 file_id 记录: ${task.fileId?.substring(0, 30)}...`);
+        }
+      }
+    }
+
+    logger.info(`已尝试恢复 ${incomplete.length} 个未完成的下载任务`);
+  }
+
+  /**
+   * 格式化字节大小
+   */
+  formatBytes(bytes) {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return (bytes / Math.pow(k, i)).toFixed(2) + ' ' + sizes[i];
   }
 
   async processChat(chatConfig) {

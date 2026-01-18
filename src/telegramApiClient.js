@@ -273,39 +273,49 @@ export class TelegramApiClient {
   }
 
   /**
-   * 通过 file_id 下载文件（带重试）
+   * 通过 file_id 下载文件（带重试，支持断点续传）
+   * @param {string} fileId - 文件 ID
+   * @param {string} savePath - 保存路径
+   * @param {Function} progressCallback - 进度回调
+   * @param {number} retries - 重试次数
+   * @param {number} startBytes - 起始字节数（用于断点续传）
    */
-  async downloadMediaByFileId(fileId, savePath, progressCallback, retries = 3) {
+  async downloadMediaByFileId(fileId, savePath, progressCallback, retries = 3, startBytes = 0) {
     let lastError;
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
         // 获取文件信息（带重试）
         const fileInfo = await this.getFileByFileId(fileId, retries);
-        
+
         if (!fileInfo || !fileInfo.file_path) {
           throw new Error('无法获取文件路径');
         }
 
         // 构造公网可访问的 URL
         const publicUrl = this.buildPublicFileUrl(fileInfo.file_path);
-        
+
         if (attempt === 1) {
-          this.logger.info(`开始下载文件: ${publicUrl}`);
+          if (startBytes > 0) {
+            this.logger.info(`断点续传下载文件: ${publicUrl} (已下载: ${this.formatBytes(startBytes)})`);
+          } else {
+            this.logger.info(`开始下载文件: ${publicUrl}`);
+          }
         } else {
           this.logger.info(`重试下载文件（尝试 ${attempt}/${retries}）: ${publicUrl}`);
         }
 
-        // 使用 https 下载文件（带重试）
-        return await this.downloadFileFromUrl(publicUrl, savePath, progressCallback, retries);
+        // 使用 https 下载文件（带重试，支持断点续传）
+        return await this.downloadFileFromUrl(publicUrl, savePath, progressCallback, retries, startBytes);
       } catch (error) {
         lastError = error;
-        const isNetworkError = error.code === 'ECONNRESET' || 
-                              error.code === 'ETIMEDOUT' || 
+        const isNetworkError = error.code === 'ECONNRESET' ||
+                              error.code === 'ETIMEDOUT' ||
                               error.code === 'ENOTFOUND' ||
                               error.message?.includes('ECONNRESET') ||
                               error.message?.includes('ETIMEDOUT') ||
-                              error.message?.includes('read ECONNRESET');
-        
+                              error.message?.includes('read ECONNRESET') ||
+                              error.message?.includes('下载超时');
+
         if (isNetworkError && attempt < retries) {
           const waitTime = attempt * 2000; // 递增等待时间：2s, 4s, 6s
           this.logger.warn(`下载媒体失败（尝试 ${attempt}/${retries}），${waitTime}ms 后重试: ${fileId} - ${error.message}`);
@@ -343,21 +353,29 @@ export class TelegramApiClient {
   }
 
   /**
-   * 从 URL 下载文件（带重试和超时，优化性能）
+   * 从 URL 下载文件（带重试和超时，优化性能，支持断点续传）
+   * @param {string} url - 下载 URL
+   * @param {string} savePath - 保存路径
+   * @param {Function} progressCallback - 进度回调
+   * @param {number} retries - 重试次数
+   * @param {number} startBytes - 起始字节数（用于断点续传）
    */
-  downloadFileFromUrl(url, savePath, progressCallback, retries = 3) {
+  downloadFileFromUrl(url, savePath, progressCallback, retries = 3, startBytes = 0) {
     return new Promise((resolve, reject) => {
       // 使用更大的缓冲区提高写入性能
-      const file = createWriteStream(savePath, { 
+      // flags: 'w' 创建新文件，'r+' 用于断点续传（需要文件已存在）
+      const file = createWriteStream(savePath, {
+        flags: startBytes > 0 ? 'r+' : 'w',
+        start: startBytes,
         highWaterMark: 16 * 1024 * 1024 // 16MB 缓冲区
       });
-      
-      let downloadedBytes = 0;
+
+      let downloadedBytes = startBytes; // 从起始字节开始计算
       let totalBytes = 0;
       let lastProgressUpdate = 0;
       const PROGRESS_UPDATE_INTERVAL = 500; // 每500ms更新一次进度，减少开销
       const DOWNLOAD_TIMEOUT = 300000; // 5分钟超时
-      
+
       let timeoutId;
       let hasResolved = false;
       let req;
@@ -382,17 +400,26 @@ export class TelegramApiClient {
         }
       }, DOWNLOAD_TIMEOUT);
 
+      // 构建请求头，支持断点续传
+      const requestHeaders = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Connection': 'keep-alive',
+        'Accept-Encoding': 'gzip, deflate, br' // 支持压缩
+      };
+
+      // 如果有起始字节，添加 Range 请求头
+      if (startBytes > 0) {
+        requestHeaders['Range'] = `bytes=${startBytes}-`;
+      }
+
       req = https.get(url, {
         timeout: DOWNLOAD_TIMEOUT,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Connection': 'keep-alive',
-          'Accept-Encoding': 'gzip, deflate, br' // 支持压缩
-        }
+        headers: requestHeaders
       }, (res) => {
         cleanup(); // 连接已建立，清除连接超时
-        
-        if (res.statusCode !== 200) {
+
+        // 处理 206 Partial Content（断点续传响应）或 200 OK
+        if (res.statusCode !== 206 && res.statusCode !== 200) {
           file.destroy();
           if (!hasResolved) {
             hasResolved = true;
@@ -401,7 +428,56 @@ export class TelegramApiClient {
           return;
         }
 
-        totalBytes = parseInt(res.headers['content-length'] || '0', 10);
+        // 获取总大小
+        const contentLength = res.headers['content-length'];
+        totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
+
+        // 如果是断点续传（206），服务器会返回剩余内容大小
+        // 需要计算实际的总大小
+        if (res.statusCode === 206 && startBytes > 0 && totalBytes > 0) {
+          // content-length 是本次请求返回的字节数，不是文件总大小
+          // 文件总大小 = 起始字节 + 本次返回的字节数
+          // 但我们只需要显示剩余部分的进度
+          totalBytes = startBytes + totalBytes;
+        } else if (startBytes > 0 && totalBytes > 0) {
+          // 如果服务器不支持 Range 但我们发送了 Range 请求头
+          // 或者状态码是 200，则重新下载整个文件
+          // 这种情况下需要重置文件并从 0 开始
+          file.destroy();
+          // 重新创建文件流，从 0 开始
+          file.removeAllListeners();
+          const newFile = createWriteStream(savePath, {
+            highWaterMark: 16 * 1024 * 1024
+          });
+          downloadedBytes = 0;
+
+          // 移除旧的请求，创建新请求
+          req.removeAllListeners('error');
+          req.destroy();
+
+          // 直接 pipe 响应到新文件（不使用 Range）
+          res.pipe(newFile);
+
+          newFile.on('finish', () => {
+            if (progressCallback) {
+              progressCallback(1, downloadedBytes, downloadedBytes);
+            }
+            if (!hasResolved) {
+              hasResolved = true;
+              resolve(savePath);
+            }
+          });
+
+          newFile.on('error', (error) => {
+            cleanup();
+            if (!hasResolved) {
+              hasResolved = true;
+              reject(error);
+            }
+          });
+
+          return;
+        }
 
         // 使用 PassThrough 流来高效处理数据，同时跟踪进度
         const progressStream = new PassThrough({
@@ -411,7 +487,7 @@ export class TelegramApiClient {
         // 监听数据流，更新进度
         progressStream.on('data', (chunk) => {
           downloadedBytes += chunk.length;
-          
+
           // 减少进度更新频率，提高性能
           const now = Date.now();
           if (progressCallback && (now - lastProgressUpdate >= PROGRESS_UPDATE_INTERVAL || downloadedBytes === totalBytes)) {
@@ -489,6 +565,14 @@ export class TelegramApiClient {
 
       file.on('error', (error) => {
         cleanup();
+        // 如果文件不存在（ENOENT）或 startBytes 超出文件范围，尝试从 0 开始下载
+        if ((error.code === 'ENOENT' || error.message.includes('start out of range')) && startBytes > 0 && !hasResolved) {
+          hasResolved = true;
+          // 重新从 0 开始下载
+          this.logger.warn(`文件不存在或起始位置超出范围，从头开始下载: ${savePath}`);
+          this.downloadFileFromUrl(url, savePath, progressCallback, retries, 0).then(resolve).catch(reject);
+          return;
+        }
         file.destroy();
         if (!hasResolved) {
           hasResolved = true;
@@ -509,6 +593,133 @@ export class TelegramApiClient {
       this.logger.error(`获取媒体信息失败 (${chatId}/${messageId}):`, error.message);
       throw error;
     }
+  }
+
+  /**
+   * 通过 messageId 下载文件（当 file_id 无效时使用）
+   * 向服务器发送 chatId + messageId，让服务器获取新的 file_id 并下载
+   * @param {string} chatId - 聊天 ID
+   * @param {string|number} messageId - 消息 ID
+   * @param {string} savePath - 保存路径
+   * @param {Function} progressCallback - 进度回调
+   * @param {number} retries - 重试次数
+   */
+  async downloadMediaByMessageId(chatId, messageId, savePath, progressCallback, retries = 3) {
+    let lastError;
+
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        // 向远程服务器请求通过 messageId 下载文件
+        // 服务器会：1. 通过 chatId + messageId 获取消息 2. 提取 file_id 3. 下载文件
+        const url = `${this.botApiHost}/downloadByMessageId`;
+        const postData = JSON.stringify({
+          chat_id: chatId,
+          message_id: messageId,
+          save_path: savePath
+        });
+
+        this.logger.info(`请求服务器通过 messageId 下载: chatId=${chatId}, messageId=${messageId}`);
+
+        const response = await this.makePostRequest(url, postData, 300000); // 5分钟超时
+
+        this.logger.debug(`服务器响应: ${JSON.stringify(response)}`);
+
+        if (response && response.ok && response.file_path) {
+          // 服务器返回了文件路径，说明下载成功
+          // 构造公网 URL 下载实际文件
+          const publicUrl = this.buildPublicFileUrl(response.file_path);
+          this.logger.info(`服务器下载完成，开始从公网获取: ${publicUrl}`);
+
+          return await this.downloadFileFromUrl(publicUrl, savePath, progressCallback, 3, 0);
+        } else if (response && response.ok && response.file_data) {
+          // 服务器直接返回了文件数据（Base64 编码）
+          const fs = await import('fs');
+          const fileData = Buffer.from(response.file_data, 'base64');
+          fs.writeFileSync(savePath, fileData);
+          if (progressCallback) {
+            progressCallback(1, fileData.length, fileData.length);
+          }
+          return savePath;
+        } else if (response && response.message) {
+          throw new Error(response.message);
+        } else if (response && response.description) {
+          throw new Error(response.description);
+        } else if (response && !response.ok) {
+          throw new Error(`服务器返回错误: ${JSON.stringify(response)}`);
+        } else {
+          throw new Error('服务器响应无效或为空');
+        }
+      } catch (error) {
+        lastError = error;
+        this.logger.error(`通过 messageId 下载失败 (尝试 ${attempt}/${retries}):`, error.message);
+
+        const isNetworkError = error.code === 'ECONNRESET' ||
+                              error.code === 'ETIMEDOUT' ||
+                              error.code === 'ENOTFOUND' ||
+                              error.message?.includes('ECONNRESET') ||
+                              error.message?.includes('ETIMEDOUT') ||
+                              error.message?.includes('超时') ||
+                              error.message?.includes('socket hang up');
+
+        if (isNetworkError && attempt < retries) {
+          const waitTime = attempt * 2000;
+          this.logger.warn(`网络错误，${waitTime}ms 后重试`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+        } else {
+          // 如果是服务器接口不存在或其他错误，直接抛出
+          if (error.message?.includes('服务器返回错误') || error.message?.includes('服务器响应无效')) {
+            throw error;
+          }
+          // 其他错误继续重试
+          if (attempt < retries) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+        }
+      }
+    }
+    throw lastError;
+  }
+
+  /**
+   * 发送 POST 请求
+   */
+  makePostRequest(url, postData, timeout = 30000) {
+    return new Promise((resolve, reject) => {
+      const urlObj = new URL(url);
+      const options = {
+        hostname: urlObj.hostname,
+        port: urlObj.port || 443,
+        path: urlObj.pathname,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData)
+        },
+        timeout: timeout
+      };
+
+      const req = https.request(options, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            resolve(json);
+          } catch (e) {
+            resolve({ raw: data });
+          }
+        });
+      });
+
+      req.on('error', reject);
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('请求超时'));
+      });
+
+      req.write(postData);
+      req.end();
+    });
   }
 
   /**
@@ -553,5 +764,16 @@ export class TelegramApiClient {
    */
   getBot() {
     return this.bot;
+  }
+
+  /**
+   * 格式化字节大小
+   */
+  formatBytes(bytes) {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return (bytes / Math.pow(k, i)).toFixed(2) + ' ' + sizes[i];
   }
 }
