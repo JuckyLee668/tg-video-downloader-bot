@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
@@ -75,12 +75,26 @@ export class DownloadHistory {
       return false;
     }
 
-    // 如果提供了文件路径，检查文件是否仍然存在
+    // 如果提供了文件路径，检查文件是否仍然存在，并 also check if it's fully downloaded
     if (filePath && record.filePath) {
       if (!existsSync(record.filePath)) {
         // 文件已删除，从历史记录中移除
         delete this.history[key];
         this.saveHistory();
+        return false;
+      }
+
+      // Additional check: verify that the file is fully downloaded by comparing sizes
+      try {
+        if (existsSync(record.filePath) && record.fileSize) {
+          const stats = statSync(record.filePath);
+          // If the file size doesn't match the recorded size, the download wasn't completed
+          if (stats.size < record.fileSize) {
+            return false; // Not fully downloaded, needs to be resumed
+          }
+        }
+      } catch (error) {
+        // If there's an error checking file size, assume it's not properly downloaded
         return false;
       }
     }
@@ -159,12 +173,13 @@ export class DownloadHistory {
 
   /**
    * 获取所有未完成的下载任务（用于程序启动时恢复）
-   * 返回状态为 'in_progress' 的记录
+   * 返回状态为 'in_progress' 的记录以及文件大小不匹配的记录
    */
   getIncompleteDownloads() {
     const incomplete = [];
     for (const key in this.history) {
       const record = this.history[key];
+      // Include records that are explicitly in progress
       if (record.status === 'in_progress') {
         incomplete.push({
           fileId: record.fileId,
@@ -175,6 +190,28 @@ export class DownloadHistory {
           downloadedBytes: record.downloadedBytes || 0,
           fileSize: record.fileSize || 0
         });
+      }
+      // Also include completed records where file size doesn't match (potentially interrupted downloads)
+      else if (record.status === 'completed' && record.filePath && record.fileSize) {
+        try {
+          if (existsSync(record.filePath)) {
+            const stats = statSync(record.filePath);
+            // If file size on disk is different from recorded size, it may be incomplete
+            if (stats.size < record.fileSize) {
+              incomplete.push({
+                fileId: record.fileId,
+                chatId: record.chatId,
+                messageId: record.messageId,
+                filePath: record.filePath,
+                fileName: record.fileName,
+                downloadedBytes: stats.size,
+                fileSize: record.fileSize
+              });
+            }
+          }
+        } catch (error) {
+          // Ignore file system errors and continue
+        }
       }
     }
     return incomplete;

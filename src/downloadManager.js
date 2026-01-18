@@ -32,6 +32,74 @@ export class DownloadManager extends EventEmitter {
       skipped: 0,
     };
     this.maxConcurrent = config.max_download_task || 5;
+
+    // Always start fresh download instead of resume (new feature)
+    this.alwaysFreshDownload = config.always_fresh_download || false;
+
+    // Batch processing optimizations
+    this.batchSize = config.batch_size || 10;  // Number of tasks to process in batch
+    this.batchInterval = config.batch_interval || 1000;  // Interval between batches in ms
+    this.processingBatch = false;
+    this.batchStartTime = null;
+    this.lastBatchProcessed = 0;
+
+    // Adaptive concurrency adjustment
+    this.adaptiveConcurrency = config.adaptive_concurrency || false;
+    this.concurrencyAdjustmentInterval = config.concurrency_adjustment_interval || 30000; // 30 seconds
+    this.successfulDownloads = 0;
+    this.failedDownloads = 0;
+    this.adjustmentTimer = null;
+
+    // Initialize adaptive concurrency if enabled
+    if (this.adaptiveConcurrency) {
+      this.startConcurrencyAdjustment();
+    }
+  }
+
+  startConcurrencyAdjustment() {
+    this.adjustmentTimer = setInterval(() => {
+      const totalAttempts = this.successfulDownloads + this.failedDownloads;
+      if (totalAttempts > 10) { // Only adjust if we have enough data
+        const successRate = this.successfulDownloads / totalAttempts;
+
+        if (successRate > 0.9 && this.maxConcurrent < 20) {
+          // High success rate, can increase concurrency
+          this.maxConcurrent = Math.min(this.maxConcurrent + 1, 20);
+          this.logger.info(`自适应并发调整: 增加到 ${this.maxConcurrent} (成功率: ${(successRate * 100).toFixed(1)}%)`);
+        } else if (successRate < 0.8 && this.maxConcurrent > 2) {
+          // Low success rate, decrease concurrency
+          this.maxConcurrent = Math.max(this.maxConcurrent - 1, 2);
+          this.logger.info(`自适应并发调整: 减少到 ${this.maxConcurrent} (成功率: ${(successRate * 100).toFixed(1)}%)`);
+        }
+
+        // Reset counters
+        this.successfulDownloads = 0;
+        this.failedDownloads = 0;
+      }
+    }, this.concurrencyAdjustmentInterval);
+  }
+
+  /**
+   * Record download success/failure for adaptive concurrency
+   */
+  recordDownloadOutcome(success) {
+    if (this.adaptiveConcurrency) {
+      if (success) {
+        this.successfulDownloads++;
+      } else {
+        this.failedDownloads++;
+      }
+    }
+  }
+
+  /**
+   * Clean up resources
+   */
+  destroy() {
+    if (this.adjustmentTimer) {
+      clearInterval(this.adjustmentTimer);
+      this.adjustmentTimer = null;
+    }
   }
 
   async init() {
@@ -43,16 +111,35 @@ export class DownloadManager extends EventEmitter {
   }
 
   async addDownloadTask(task) {
+    // Check for duplicate task before adding to queue
+    const taskId = `${task.chatId}_${task.messageId || Date.now()}`;
+    const duplicateInQueue = this.downloadQueue.some(t =>
+      t.chatId === task.chatId &&
+      (t.messageId === task.messageId ||
+       (t.fileId && task.fileId && t.fileId === task.fileId))
+    );
+    const duplicateInActive = this.activeDownloads.has(taskId) ||
+      Array.from(this.activeDownloads.values()).some(t =>
+        t.chatId === task.chatId &&
+        (t.messageId === task.messageId ||
+         (t.fileId && task.fileId && t.fileId === task.fileId))
+      );
+
+    if (duplicateInQueue || duplicateInActive) {
+      this.logger.warn(`任务已存在，跳过重复添加: ${task.fileName || '文件'} (chatId: ${task.chatId}, messageId: ${task.messageId})`);
+      return;
+    }
+
     this.downloadQueue.push(task);
     this.downloadStats.total++;
-    
+
     const queueStatus = {
       队列中: this.downloadQueue.length,
       正在下载: this.activeDownloads.size,
       最大并发: this.maxConcurrent
     };
     this.logger.info(`任务已加入下载队列: ${task.fileName || '文件'} (${JSON.stringify(queueStatus)})`);
-    
+
     this.emit('status', this.getStatus());
     this.processQueue();
   }
@@ -128,53 +215,59 @@ export class DownloadManager extends EventEmitter {
       let startBytes = 0;
       let resumeFromPartial = false;
 
-      // 首先检查历史记录中的进度
-      if (this.downloadHistory && fileId) {
-        const progress = this.downloadHistory.getProgress(fileId, chatId, messageId);
-        if (progress && progress.filePath === filePath && progress.downloadedBytes > 0) {
-          // 从历史记录获取已下载的字节数
-          startBytes = progress.downloadedBytes;
-          if (existsSync(filePath)) {
-            // 验证文件大小是否匹配
-            try {
-              const fileStats = statSync(filePath);
-              if (fileStats.size === startBytes) {
-                resumeFromPartial = true;
-                this.logger.info(`从历史记录恢复下载进度，从 ${formatBytes(startBytes)} 开始: ${filePath}`);
-              } else {
-                // 文件大小不匹配，重新开始下载
-                this.logger.warn(`文件大小不匹配（历史: ${startBytes}, 文件: ${fileStats.size}），重新下载`);
+      // 检查是否配置为始终重新开始下载或强制重新开始
+      if (this.alwaysFreshDownload || task.forceFreshDownload) {
+        this.logger.info(`${task.forceFreshDownload ? '强制' : '配置'}重新开始下载，忽略历史进度: ${filePath}`);
+        startBytes = 0;
+      } else {
+        // 首先检查历史记录中的进度
+        if (this.downloadHistory && fileId) {
+          const progress = this.downloadHistory.getProgress(fileId, chatId, messageId);
+          if (progress && progress.filePath === filePath && progress.downloadedBytes > 0) {
+            // 从历史记录获取已下载的字节数
+            startBytes = progress.downloadedBytes;
+            if (existsSync(filePath)) {
+              // 验证文件大小是否匹配
+              try {
+                const fileStats = statSync(filePath);
+                if (fileStats.size === startBytes) {
+                  resumeFromPartial = true;
+                  this.logger.info(`从历史记录恢复下载进度，从 ${formatBytes(startBytes)} 开始: ${filePath}`);
+                } else {
+                  // 文件大小不匹配，重新开始下载
+                  this.logger.warn(`文件大小不匹配（历史: ${startBytes}, 文件: ${fileStats.size}），重新下载`);
+                  startBytes = 0;
+                }
+              } catch (err) {
+                this.logger.warn(`无法验证文件大小，将重新下载: ${err.message}`);
                 startBytes = 0;
               }
-            } catch (err) {
-              this.logger.warn(`无法验证文件大小，将重新下载: ${err.message}`);
+            } else {
+              // 文件不存在但历史记录有进度，重新下载
+              this.logger.warn(`文件不存在但历史记录有进度，重新下载`);
               startBytes = 0;
             }
-          } else {
-            // 文件不存在但历史记录有进度，重新下载
-            this.logger.warn(`文件不存在但历史记录有进度，重新下载`);
-            startBytes = 0;
           }
         }
-      }
 
-      // 如果历史记录中没有进度，检查本地文件
-      if (startBytes === 0 && existsSync(filePath)) {
-        try {
-          const fileStats = statSync(filePath);
-          startBytes = fileStats.size;
-          if (startBytes > 0) {
-            resumeFromPartial = true;
-            this.logger.info(`检测到部分下载的文件，继续从 ${formatBytes(startBytes)} 开始下载: ${filePath}`);
+        // 如果历史记录中没有进度，检查本地文件
+        if (startBytes === 0 && existsSync(filePath)) {
+          try {
+            const fileStats = statSync(filePath);
+            startBytes = fileStats.size;
+            if (startBytes > 0) {
+              resumeFromPartial = true;
+              this.logger.info(`检测到部分下载的文件，继续从 ${formatBytes(startBytes)} 开始下载: ${filePath}`);
+            }
+          } catch (err) {
+            this.logger.warn(`无法获取文件大小，将重新下载: ${filePath}`);
           }
-        } catch (err) {
-          this.logger.warn(`无法获取文件大小，将重新下载: ${filePath}`);
         }
       }
 
       // 如果需要断点续传，先在历史记录中创建/更新进度记录
       if (startBytes > 0 && this.downloadHistory && fileId) {
-        const fileName = this.getFileName(task);
+        const fileName = this.getFileName(task) || '文件';
         this.downloadHistory.recordDownload(fileId, chatId, messageId, filePath, fileName, null, 'in_progress', startBytes);
       }
 
@@ -301,6 +394,9 @@ export class DownloadManager extends EventEmitter {
     } catch (error) {
       const downloadInfo = this.activeDownloads.get(taskId);
 
+      // 获取 fileName 用于错误处理
+      const fileName = task.fileName || this.getFileName(task) || '文件';
+
       // 记录详细错误信息
       const errorDetails = {
         message: error.message,
@@ -316,18 +412,21 @@ export class DownloadManager extends EventEmitter {
       this.logger.error(`下载文件失败 (${taskId}):`, errorDetails);
       this.downloadStats.failed++;
 
+      // 记录失败的下载结果，用于自适应并发调整
+      this.recordDownloadOutcome(false);
+
       // 如果是 file_id 无效错误，且有 messageId，尝试使用 chatId + messageId 重试
       const messageIdStr = String(messageId);
       if ((error.message?.includes('wrong file_id') || error.message?.includes('temporarily unavailable')) &&
           chatId && messageId && messageIdStr !== 'unknown' && !needRefreshFileId) {
         this.logger.warn(`file_id 无效，尝试使用 messageId 重试: chatId=${chatId}, messageId=${messageId}`);
 
-        // 重新尝试下载，使用 messageId
+        // 重新尝试下载，使用 messageId，设置 needRefreshFileId 为 true 避免再次进入这个分支
         try {
           await this.apiClient.downloadMediaByMessageId(
             chatId,
             messageId,
-            filePath,
+            filePath, // filePath is already defined above the try/catch
             progressCallback,
             3
           );
@@ -386,7 +485,7 @@ export class DownloadManager extends EventEmitter {
       downloadInfo.progress = 100;
       downloadInfo.filePath = filePath;
       downloadInfo.duration = Date.now() - downloadInfo.startTime;
-      
+
       // 如果是跳过，更新跳过计数
       if (skipped) {
         this.downloadStats.skipped = (this.downloadStats.skipped || 0) + 1;
@@ -395,6 +494,8 @@ export class DownloadManager extends EventEmitter {
 
     if (!skipped) {
       this.downloadStats.completed++;
+      // 记录成功的下载结果，用于自适应并发调整
+      this.recordDownloadOutcome(true);
     }
     this.activeDownloads.delete(taskId);
     this.downloadStats.active = this.activeDownloads.size;
@@ -410,7 +511,7 @@ export class DownloadManager extends EventEmitter {
         const chatId = downloadInfo.chatId;
         const messageId = downloadInfo.messageId;
         const message = downloadInfo.message;
-        
+
         // 获取文件名
         let fileName = downloadInfo.fileName || '文件';
         if (message && !fileName) {
@@ -449,7 +550,7 @@ export class DownloadManager extends EventEmitter {
     });
 
     this.emit('status', this.getStatus());
-    
+
     // 继续处理队列中的下一个任务
     this.processQueue();
 
@@ -480,9 +581,13 @@ export class DownloadManager extends EventEmitter {
           pathParts.push(this.sanitizeFileName(chatTitle));
         } else if (prefix === 'media_datetime') {
           // Bot API 消息使用 date 字段（Unix 时间戳）
-          const date = message.date ? new Date(message.date * 1000) : new Date();
-          const format = this.config.date_format || '%Y_%m';
-          pathParts.push(this.formatDate(date, format));
+          // 如果启用了同频道文件合并，则跳过日期前缀
+          if (this.config.group_same_channel_files !== true) {
+            const date = message.date ? new Date(message.date * 1000) : new Date();
+            const format = this.config.date_format || '%Y_%m';
+            pathParts.push(this.formatDate(date, format));
+          }
+          // 否则跳过日期前缀，直接处理下一个prefix
         } else if (prefix === 'media_type') {
           pathParts.push(mediaType);
         }

@@ -73,10 +73,18 @@ file_formats:
 # 保存路径
 save_path: ./downloads
 
+# 是否将同一频道的文件组合在一起（禁用按月分组）
+# 当设置为 true 时，所有来自同一频道的文件将存储在同一个文件夹中
+# 与 file_path_prefix 配置结合使用效果更佳
+group_same_channel_files: true
+
 # 文件路径前缀（文件夹结构）
+# Use "chat_title" to group files by channel
+# Use "media_datetime" to separate files by date (creates monthly folders)
+# Use "media_type" to separate by file type (video, audio, etc.)
 file_path_prefix:
   - chat_title
-  - media_datetime
+  # - media_datetime  # Comment out this line to avoid monthly folders and group all files from same channel together
 
 # 文件名前缀
 file_name_prefix:
@@ -87,6 +95,18 @@ file_name_prefix_split: ' - '
 
 # 最大并发下载任务数（建议根据网络带宽调整：10-20）
 max_download_task: 10
+
+# 是否始终重新开始下载（而非断点续传）
+# 当设置为 true 时，不管之前的下载进度如何，都重新开始下载
+always_fresh_download: false
+
+# 批处理配置（优化大量文件下载）
+batch_size: 20
+batch_interval: 500
+
+# 自适应并发控制（根据成功率自动调整并发数）
+adaptive_concurrency: true
+concurrency_adjustment_interval: 30000  # 30秒调整一次
 
 # 语言设置
 language: EN

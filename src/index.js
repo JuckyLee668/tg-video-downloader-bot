@@ -8,6 +8,8 @@ import { ConfigManager } from './configManager.js';
 import { TelegramApiClient } from './telegramApiClient.js';
 import { DownloadHistory } from './downloadHistory.js';
 import { MessageRateLimiter } from './messageRateLimiter.js';
+import { ForwardedQueue } from './forwardedQueue.js';
+import { UnfinishedDownloadManager } from './unfinishedDownloadManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -40,6 +42,8 @@ class TelegramMediaDownloader {
     this.botHandler = null;
     this.downloadHistory = null;
     this.messageRateLimiter = null;
+    this.forwardedQueue = null; // New forwarded queue
+    this.unfinishedDownloadManager = null; // New unfinished download manager
     // 存储每个下载任务的消息信息，用于完成后发送消息
     this.downloadTasks = new Map(); // taskId -> { chatId, messageId, fileName, isPrivateChat }
   }
@@ -59,6 +63,14 @@ class TelegramMediaDownloader {
       this.downloadHistory = new DownloadHistory(this.config, logger);
       logger.info(chalk.green('✓ 下载历史记录已初始化'));
 
+      // 初始化转发队列
+      this.forwardedQueue = new ForwardedQueue(this.config, logger);
+      logger.info(chalk.green('✓ 转发待下载队列已初始化'));
+
+      // 初始化未完成下载管理器
+      this.unfinishedDownloadManager = new UnfinishedDownloadManager(this.config, logger, this.downloadHistory, this.forwardedQueue);
+      logger.info(chalk.green('✓ 未完成下载管理器已初始化'));
+
       // 初始化消息发送限流器（更保守的配置）
       this.messageRateLimiter = new MessageRateLimiter(logger, {
         maxPerSecond: 5,        // 全局每秒最多 5 条
@@ -74,8 +86,8 @@ class TelegramMediaDownloader {
       this.downloadManager = new DownloadManager(this.config, logger, this.apiClient, this.downloadHistory);
       await this.downloadManager.init();
 
-      // 恢复未完成的下载任务（断点续传）
-      await this.restoreIncompleteDownloads();
+      // 恢复未完成的下载任务（重构版）
+      await this.restoreUnfinishedDownloads();
 
       // 设置下载完成监听
       this.setupDownloadCompleteListener();
@@ -98,9 +110,48 @@ class TelegramMediaDownloader {
       logger.info('Bot API 模式：将通过消息监听处理新消息');
 
       logger.info(chalk.green('✓ Telegram Media Downloader 启动成功'));
+
+      // Start periodic check for pending forwarded downloads
+      this.startForwardedQueueProcessor();
     } catch (error) {
       logger.error('初始化失败:', error);
       process.exit(1);
+    }
+  }
+
+  /**
+   * Start periodic processor for forwarded queue items
+   */
+  startForwardedQueueProcessor() {
+    // Run initial processing asynchronously to avoid blocking startup
+    setImmediate(async () => {
+      try {
+        await this.processPendingForwardedDownloads();
+      } catch (error) {
+        logger.error('初始处理转发队列失败:', error);
+      }
+    }); // Execute immediately but in the next tick to avoid blocking startup
+
+    // Then run periodically (every 10 minutes instead of 30 seconds to reduce overhead)
+    this.forwardedQueueProcessorInterval = setInterval(async () => {
+      try {
+        await this.processPendingForwardedDownloads();
+      } catch (error) {
+        logger.error('处理转发队列时出错:', error);
+      }
+    }, 600000); // Check every 10 minutes (600000ms) instead of 30 seconds
+
+    logger.info('转发队列处理器已启动 (每10分钟检查一次)');
+  }
+
+  /**
+   * Stop the forwarded queue processor
+   */
+  stopForwardedQueueProcessor() {
+    if (this.forwardedQueueProcessorInterval) {
+      clearInterval(this.forwardedQueueProcessorInterval);
+      this.forwardedQueueProcessorInterval = null;
+      logger.info('转发队列处理器已停止');
     }
   }
 
@@ -121,8 +172,21 @@ class TelegramMediaDownloader {
       const finalFileName = taskInfo?.fileName || fileName || '文件';
       const isPrivateChat = taskInfo?.isPrivateChat || false;
 
-      // 如果没有 chatId，无法发送消息
-      if (!finalChatId) {
+      // 如果没有 chatId，尝试从 taskId 解析
+      let effectiveChatId = finalChatId;
+      let effectiveMessageId = null;
+
+      if (!effectiveChatId && taskId) {
+        // Try to parse from taskId (format: "chatId_messageId")
+        const parts = taskId.split('_');
+        if (parts.length >= 2) {
+          effectiveChatId = parts[0];
+          effectiveMessageId = parts.slice(1).join('_'); // messageId might itself contain underscores
+        }
+      }
+
+      // 如果仍然没有 chatId，无法发送消息
+      if (!effectiveChatId) {
         logger.warn(`无法发送完成消息：缺少 chatId (taskId: ${taskId})`);
         if (taskInfo) {
           this.downloadTasks.delete(taskId);
@@ -130,14 +194,43 @@ class TelegramMediaDownloader {
         return;
       }
 
+      // Try to get messageId from other sources if not available
+      if (!effectiveMessageId) {
+        if (data.messageId) {
+          effectiveMessageId = data.messageId;
+        } else if (taskInfo?.messageId) {
+          effectiveMessageId = taskInfo.messageId;
+        } else if (taskId) {
+          const parts = taskId.split('_');
+          if (parts.length >= 2) {
+            effectiveMessageId = parts[1];
+          }
+        }
+      }
+
       const bot = this.apiClient.getBot();
 
-      // 只在私聊时发送完成消息
-      if (isPrivateChat) {
+      // 确定是否应该发送完成消息
+      // 1. 私聊消息（直接发送文件给bot，或在私聊中转发）
+      // 2. 在配置的聊天中接收的消息（但避免在公共群组/频道中发送消息影响其他人）
+      // 对于已配置的聊天（即用户明确添加到配置中），我们也应该发送通知
+      const isConfiguredChat = this.config.chat?.some(c => {
+        const configChatId = c.chat_id.toString();
+        return configChatId === effectiveChatId || configChatId === `-${effectiveChatId}`;
+      }) || false;
+
+      // 仅在私聊或在配置的聊天中发送通知
+      // 注意：对于公开的群组/频道，我们不会发送通知以避免影响其他成员
+      const shouldSendNotification = isPrivateChat || isConfiguredChat;
+
+      // 记录通知决策
+      logger.info(`下载完成通知决策: taskId=${taskId}, chatId=${effectiveChatId}, isPrivateChat=${isPrivateChat}, isConfiguredChat=${isConfiguredChat}, shouldSend=${shouldSendNotification}, status=${status}`);
+
+      if (shouldSendNotification) {
         // 将消息添加到队列
         this.messageQueue.push({
           bot,
-          chatId: finalChatId,
+          chatId: effectiveChatId,
           status,
           filePath,
           fileName: finalFileName,
@@ -147,11 +240,62 @@ class TelegramMediaDownloader {
 
         // 启动消息处理队列
         this.processMessageQueue();
+      } else {
+        logger.info(`跳过发送完成消息: taskId=${taskId}, chatId=${effectiveChatId}, 原因: 不满足通知条件`);
       }
 
       // 清理任务信息
       if (taskInfo) {
         this.downloadTasks.delete(taskId);
+        logger.debug(`已清理任务信息: ${taskId}`);
+      }
+
+      // 检查是否在转发队列中并相应处理
+      if (effectiveMessageId) {
+        // Check if this item exists in the forwarded queue and remove if completed
+        if (this.forwardedQueue.isInQueue(effectiveChatId, effectiveMessageId)) {
+          if (status === 'completed') {
+            // Check if file actually exists and has content before removing from queue
+            try {
+              const fs = await import('fs');
+              if (filePath && fs.existsSync(filePath)) {
+                const stats = fs.statSync(filePath);
+                if (stats.size > 0) {
+                  // File exists and has content, update queue status and remove
+                  this.forwardedQueue.updateStatus(effectiveChatId, effectiveMessageId, 'completed');
+                  this.forwardedQueue.removeFromQueue(effectiveChatId, effectiveMessageId);
+                  logger.info(`转发文件下载完成，已从待下载队列移除: ${effectiveChatId}_${effectiveMessageId} (文件大小: ${this.formatBytes(stats.size)})`);
+                } else {
+                  logger.warn(`转发文件下载完成但大小为0，保留在队列中: ${effectiveChatId}_${effectiveMessageId}`);
+                  // Keep in queue for possible retry
+                  this.forwardedQueue.updateStatus(effectiveChatId, effectiveMessageId, 'pending');
+                }
+              } else {
+                logger.warn(`转发文件不存在，保留在队列中: ${effectiveChatId}_${effectiveMessageId}`);
+                // Keep in queue for possible retry
+                this.forwardedQueue.updateStatus(effectiveChatId, effectiveMessageId, 'pending');
+              }
+            } catch (error) {
+              logger.error(`检查转发文件状态时出错: ${effectiveChatId}_${effectiveMessageId}`, error);
+              // Keep in queue for possible retry
+              this.forwardedQueue.updateStatus(effectiveChatId, effectiveMessageId, 'pending');
+            }
+          } else {
+            // For failed downloads, decide whether to keep in queue or remove based on error type
+            const error = data.error || data.errorDetails?.message;
+            const isFileIdError = error?.includes('wrong file_id') || error?.includes('temporarily unavailable');
+
+            if (isFileIdError) {
+              // File ID is invalid, remove from queue permanently
+              this.forwardedQueue.removeFromQueue(effectiveChatId, effectiveMessageId);
+              logger.warn(`转发文件ID无效，已从队列移除: ${effectiveChatId}_${effectiveMessageId} (错误: ${error || 'unknown'})`);
+            } else {
+              // Other error, keep in queue to retry
+              this.forwardedQueue.updateStatus(effectiveChatId, effectiveMessageId, 'pending');
+              logger.warn(`转发文件下载失败，保留在队列中重试: ${effectiveChatId}_${effectiveMessageId} (状态: ${status})`);
+            }
+          }
+        }
       }
     });
   }
@@ -180,23 +324,31 @@ class TelegramMediaDownloader {
           let errorMessage = '';
           const errorDetail = error || errorDetails?.message || '';
 
-          if (errorDetail.includes('wrong file_id') || errorDetail.includes('temporarily unavailable')) {
+          if (errorDetail && (errorDetail.includes('wrong file_id') || errorDetail.includes('temporarily unavailable'))) {
             errorMessage = '\n\n⚠️ 文件在 Telegram 服务器上已不可用，可能已被删除或过期。';
-          } else if (errorDetail.includes('ENOENT')) {
+          } else if (errorDetail && errorDetail.includes('ENOENT')) {
             errorMessage = '\n\n⚠️ 文件保存失败，请检查保存路径权限。';
-          } else if (errorDetail.includes('timeout') || errorDetail.includes('超时')) {
+          } else if (errorDetail && (errorDetail.includes('timeout') || errorDetail.includes('超时'))) {
             errorMessage = '\n\n⚠️ 下载超时，请稍后重试。';
           } else if (errorDetail) {
             errorMessage = `\n\n错误信息：${errorDetail}`;
           }
           text = `❌ 下载失败：${fileName}${errorMessage}`;
+        } else {
+          // 默认情况，处理未知状态
+          text = `⚠️ 未知状态：${fileName} (状态: ${status})`;
+        }
+
+        // 确保消息文本不为空
+        if (!text || text.trim() === '') {
+          text = `📝 处理完成：${fileName} (状态: ${status || 'unknown'})`;
         }
 
         await this.messageRateLimiter.sendMessage(bot, chatId, text);
       } catch (err) {
         logger.error('发送完成消息失败:', err);
         // 如果失败，将消息放回队列末尾（最多重试3次）
-        if (item.retryCount < 3) {
+        if (!item.retryCount || item.retryCount < 3) {
           item.retryCount = (item.retryCount || 0) + 1;
           this.messageQueue.push(item);
           logger.info(`消息发送失败，放回队列重试 (${item.retryCount}/3)`);
@@ -378,9 +530,21 @@ class TelegramMediaDownloader {
             fileName: fileName, // 传递文件名
           });
 
+          // 如果是转发的消息，添加到转发队列
+          if (isForwarded) {
+            const forwardInfo = {
+              forwardFrom: msg.forward_from_chat?.title || msg.forward_from?.first_name || msg.forward_from?.username || '未知来源',
+              forwardFromChatId: msg.forward_from_chat?.id || null,
+              forwardDate: msg.forward_date || null
+            };
+
+            this.forwardedQueue.addToQueue(chatId, messageId, fileName, mediaType, fileId, forwardInfo);
+            this.forwardedQueue.updateStatus(chatId, messageId, 'downloading');
+          }
+
           const sourceType = isForwarded ? '转发' : (isPrivateChat ? '私聊' : chatType);
           logger.info(`✅ 新消息已添加到下载队列: ${chatTitle} (${sourceType}) - ${messageId}`);
-          
+
           // 保存任务信息，用于完成后发送消息
           this.downloadTasks.set(taskId, {
             chatId,
@@ -596,62 +760,345 @@ class TelegramMediaDownloader {
 
     if (incomplete.length === 0) {
       logger.info('没有未完成的下载任务');
-      return;
+    } else {
+      logger.info(`发现 ${incomplete.length} 个未完成的下载任务，开始恢复...`);
+
+      // Check the download manager's current queue and active downloads to avoid duplicates
+      const currentQueueIds = new Set(this.downloadManager.downloadQueue.map(task => `${task.chatId}_${task.messageId}`));
+      const currentActiveIds = new Set(Array.from(this.downloadManager.activeDownloads.keys()));
+
+      for (const task of incomplete) {
+        try {
+          // Check if the task already exists in queue or active downloads
+          const taskId = `${task.chatId}_${task.messageId || Date.now()}`;
+          const duplicateInQueue = this.downloadManager.downloadQueue.some(t =>
+            t.chatId === task.chatId &&
+            (t.messageId === task.messageId ||
+             (t.fileId && task.fileId && t.fileId === task.fileId))
+          );
+          const duplicateInActive = this.downloadManager.activeDownloads.has(taskId) ||
+            Array.from(this.downloadManager.activeDownloads.values()).some(t =>
+              t.chatId === task.chatId &&
+              (t.messageId === task.messageId ||
+               (t.fileId && task.fileId && t.fileId === task.fileId))
+            );
+
+          if (duplicateInQueue || duplicateInActive) {
+            logger.warn(`恢复任务已存在，跳过重复添加: ${task.fileName || '文件'} (chatId: ${task.chatId}, messageId: ${task.messageId})`);
+            continue;
+          }
+
+          // 检查本地文件是否存在
+          const fs = await import('fs');
+          if (!task.filePath || !fs.existsSync(task.filePath)) {
+            logger.warn(`文件不存在，无法恢复: ${task.filePath}`);
+            // 从历史记录中移除这个无效记录
+            const key = `file_${task.fileId}`;
+            delete this.downloadHistory.history[key];
+            this.downloadHistory.saveHistory();
+            continue;
+          }
+
+          const fileStats = fs.statSync(task.filePath);
+          const localFileSize = fileStats.size;
+
+          logger.info(`恢复下载任务: ${task.fileName || '文件'} (本地: ${this.formatBytes(localFileSize)}, 历史记录: ${this.formatBytes(task.downloadedBytes)})`);
+
+          // 创建模拟消息对象（只需要 fileId 和基本信息）
+          const mockMessage = {
+            message_id: task.messageId,
+            document: task.fileId ? { file_id: task.fileId } : undefined,
+            video: task.fileId ? { file_id: task.fileId } : undefined,
+            date: Math.floor(Date.now() / 1000) // 使用当前时间作为近似值
+          };
+
+          // 添加到下载队列
+          await this.downloadManager.addDownloadTask({
+            message: mockMessage,
+            chatId: task.chatId,
+            chatTitle: `恢复任务_${task.chatId}`,
+            mediaType: 'video', // 默认使用 video，实际下载时会从消息中获取
+            fileId: task.fileId,
+            fileName: task.fileName || '恢复下载',
+            needRefreshFileId: true // 标记需要刷新 file_id（因为服务器可能已删除原文件）
+          });
+
+          logger.info(`已加入恢复队列: ${task.fileName || task.filePath} (将尝试刷新 file_id)`);
+        } catch (error) {
+          logger.error(`恢复下载任务失败: ${task.filePath}`, error);
+          // 如果是 file_id 无效错误，清理该记录
+          if (error.message?.includes('wrong file_id') || error.message?.includes('temporarily unavailable')) {
+            const key = `file_${task.fileId}`;
+            delete this.downloadHistory.history[key];
+            this.downloadHistory.saveHistory();
+            logger.warn(`已清理无效的 file_id 记录: ${task.fileId?.substring(0, 30)}...`);
+          }
+        }
+      }
+
+      logger.info(`已尝试恢复 ${incomplete.length} 个未完成的下载任务`);
     }
 
-    logger.info(`发现 ${incomplete.length} 个未完成的下载任务，开始恢复...`);
+    // Also restore any pending forwarded downloads from the queue
+    const forwardedQueueStatus = this.getForwardedQueueStatus();
+    if (forwardedQueueStatus.pending > 0) {
+      logger.info(`发现 ${forwardedQueueStatus.pending} 个转发待下载任务，开始恢复...`);
 
-    for (const task of incomplete) {
-      try {
-        // 检查本地文件是否存在
-        const fs = await import('fs');
-        if (!task.filePath || !fs.existsSync(task.filePath)) {
-          logger.warn(`文件不存在，无法恢复: ${task.filePath}`);
-          // 从历史记录中移除这个无效记录
-          const key = `file_${task.fileId}`;
-          delete this.downloadHistory.history[key];
-          this.downloadHistory.saveHistory();
-          continue;
-        }
+      for (const item of forwardedQueueStatus.items) {
+        if (item.status === 'pending') {
+          logger.info(`检测到待处理的转发消息: ${item.fileName} (Chat: ${item.chatId}, Message: ${item.messageId})`);
 
-        const fileStats = fs.statSync(task.filePath);
-        const localFileSize = fileStats.size;
-
-        logger.info(`恢复下载任务: ${task.fileName || '文件'} (本地: ${this.formatBytes(localFileSize)}, 历史记录: ${this.formatBytes(task.downloadedBytes)})`);
-
-        // 创建模拟消息对象（只需要 fileId 和基本信息）
-        const mockMessage = {
-          message_id: task.messageId,
-          document: task.fileId ? { file_id: task.fileId } : undefined,
-          video: task.fileId ? { file_id: task.fileId } : undefined,
-          date: Math.floor(Date.now() / 1000) // 使用当前时间作为近似值
-        };
-
-        // 添加到下载队列
-        await this.downloadManager.addDownloadTask({
-          message: mockMessage,
-          chatId: task.chatId,
-          chatTitle: `恢复任务_${task.chatId}`,
-          mediaType: 'video', // 默认使用 video，实际下载时会从消息中获取
-          fileId: task.fileId,
-          fileName: task.fileName || '恢复下载',
-          needRefreshFileId: true // 标记需要刷新 file_id（因为服务器可能已删除原文件）
-        });
-
-        logger.info(`已加入恢复队列: ${task.fileName || task.filePath} (将尝试刷新 file_id)`);
-      } catch (error) {
-        logger.error(`恢复下载任务失败: ${task.filePath}`, error);
-        // 如果是 file_id 无效错误，清理该记录
-        if (error.message?.includes('wrong file_id') || error.message?.includes('temporarily unavailable')) {
-          const key = `file_${task.fileId}`;
-          delete this.downloadHistory.history[key];
-          this.downloadHistory.saveHistory();
-          logger.warn(`已清理无效的 file_id 记录: ${task.fileId?.substring(0, 30)}...`);
+          // In a real scenario, we'd want to somehow re-fetch the original message
+          // and process it again. For now, we'll mark it as downloading to indicate
+          // it's being processed.
+          this.forwardedQueue.updateStatus(item.chatId, item.messageId, 'downloading');
+          logger.info(`已标记转发任务为下载中: ${item.fileName} (ID: ${item.messageId})`);
         }
       }
     }
+  }
 
-    logger.info(`已尝试恢复 ${incomplete.length} 个未完成的下载任务`);
+  /**
+   * Process pending forwarded downloads (check periodically)
+   */
+  async processPendingForwardedDownloads() {
+    logger.info('开始处理转发队列...');
+    const forwardedQueueStatus = this.getForwardedQueueStatus();
+    logger.info(`转发队列状态: 总共 ${forwardedQueueStatus.total}, pending: ${forwardedQueueStatus.pending}, downloading: ${forwardedQueueStatus.downloading}`);
+
+    // Check the download manager's current queue and active downloads to avoid duplicates
+    const currentQueueIds = new Set(this.downloadManager.downloadQueue.map(task => `${task.chatId}_${task.messageId}`));
+    const currentActiveIds = new Set(Array.from(this.downloadManager.activeDownloads.keys()));
+
+    for (const item of forwardedQueueStatus.items) {
+      const taskId = `${item.chatId}_${item.messageId}`;
+      logger.debug(`检查转发项: ${item.fileName} (ID: ${item.messageId}), 状态: ${item.status}, 任务ID: ${taskId}`);
+
+      // Check if already in download manager's current queue or active downloads
+      const isCurrentlyInQueue = this.downloadManager.downloadQueue.some(task =>
+        `${task.chatId}_${task.messageId}` === taskId
+      );
+      const isCurrentlyDownloading = this.downloadManager.activeDownloads.has(taskId);
+
+      // Process 'pending' items normally
+      if (item.status === 'pending') {
+        logger.info(`准备处理: ${item.fileName} (状态: ${item.status})`);
+
+        try {
+          this.forwardedQueue.updateStatus(item.chatId, item.messageId, 'downloading');
+          logger.info(`状态更新为 downloading: ${item.fileName}`);
+
+          // Create synthetic message object
+          const syntheticMessage = {
+            message_id: item.messageId,
+            date: Math.floor(Date.now() / 1000),
+          };
+
+          // Determine media type
+          let mediaType = item.mediaType || 'document';
+
+          // Add media-specific object based on media type
+          if (mediaType === 'video' || mediaType === 'document') {
+            syntheticMessage.document = { file_id: item.fileId };
+          } else if (mediaType === 'photo') {
+            syntheticMessage.document = { file_id: item.fileId };
+          } else if (mediaType === 'audio') {
+            syntheticMessage.audio = { file_id: item.fileId };
+          } else if (mediaType === 'voice') {
+            syntheticMessage.voice = { file_id: item.fileId };
+          } else if (mediaType === 'animation') {
+            syntheticMessage.animation = { file_id: item.fileId };
+          } else {
+            syntheticMessage.document = { file_id: item.fileId };
+          }
+
+          // Use simpler chat title to avoid API call issues
+          const simpleChatTitle = `Chat_${item.chatId}`;
+          const forwardFrom = item.forwardInfo?.forwardFrom || 'Unknown Source';
+          const augmentedChatTitle = `${simpleChatTitle} [转发自: ${forwardFrom}]`;
+
+          logger.info(`尝试添加下载任务: ${item.fileName}, 文件ID: ${item.fileId.substring(0, 20)}...`);
+
+          // Generate taskId to store in downloadTasks map for notification purposes
+          const taskId = `${item.chatId}_${item.messageId}`;
+
+          // Store task info for notification purposes - assume it's a private chat for forwarded items
+          // Check if this chat is configured in the config
+          const isConfiguredChat = this.config.chat?.some(c => {
+            const configChatId = c.chat_id.toString();
+            return configChatId === item.chatId || configChatId === `-${item.chatId}`;
+          }) || false;
+
+          // For forwarded items, consider as private if not configured in chat list
+          const isPrivateChat = !isConfiguredChat;
+
+          this.downloadTasks.set(taskId, {
+            chatId: item.chatId,
+            messageId: item.messageId,
+            fileName: item.fileName,
+            isPrivateChat: isPrivateChat,
+            chatTitle: augmentedChatTitle,
+            mediaType: mediaType
+          });
+
+          // Add to download manager without awaiting to avoid blocking
+          // Mark this as a forced fresh download from queue to achieve "immediate start"
+          this.downloadManager.addDownloadTask({
+            message: syntheticMessage,
+            chatId: item.chatId,
+            chatTitle: augmentedChatTitle,
+            mediaType: mediaType,
+            fileId: item.fileId,
+            fileName: item.fileName,
+            // Mark this as a forced fresh download from queue
+            forceFreshDownload: true
+          }).then(() => {
+            logger.info(`成功添加下载任务: ${item.fileName}`);
+          }).catch(error => {
+            logger.error(`添加下载任务失败: ${item.fileName}`, error);
+            // If failed, set back to pending and remove from downloadTasks if added
+            this.forwardedQueue.updateStatus(item.chatId, item.messageId, 'pending');
+            this.downloadTasks.delete(taskId);
+          });
+
+          logger.info(`已发送下载请求: ${item.fileName}`);
+
+        } catch (error) {
+          logger.error(`处理转发下载异常: ${item.fileName}`, error);
+          // If failed, we might want to set it back to pending or mark as failed
+          this.forwardedQueue.updateStatus(item.chatId, item.messageId, 'pending');
+        }
+      }
+      // For 'downloading' items, check if they need restart based on timeout OR user intention to "start immediately"
+      else if (item.status === 'downloading' && (!isCurrentlyDownloading && !isCurrentlyInQueue)) {
+        // If it's marked as downloading but not actually downloading, restart it
+        logger.info(`重启下载任务: ${item.fileName} (状态为downloading但不在活动下载中)`);
+
+        try {
+          // Create synthetic message object
+          const syntheticMessage = {
+            message_id: item.messageId,
+            date: Math.floor(Date.now() / 1000),
+          };
+
+          // Determine media type
+          let mediaType = item.mediaType || 'document';
+
+          // Add media-specific object based on media type
+          if (mediaType === 'video' || mediaType === 'document') {
+            syntheticMessage.document = { file_id: item.fileId };
+          } else if (mediaType === 'photo') {
+            syntheticMessage.document = { file_id: item.fileId };
+          } else if (mediaType === 'audio') {
+            syntheticMessage.audio = { file_id: item.fileId };
+          } else if (mediaType === 'voice') {
+            syntheticMessage.voice = { file_id: item.fileId };
+          } else if (mediaType === 'animation') {
+            syntheticMessage.animation = { file_id: item.fileId };
+          } else {
+            syntheticMessage.document = { file_id: item.fileId };
+          }
+
+          // Use simpler chat title to avoid API call issues
+          const simpleChatTitle = `Chat_${item.chatId}`;
+          const forwardFrom = item.forwardInfo?.forwardFrom || 'Unknown Source';
+          const augmentedChatTitle = `${simpleChatTitle} [转发自: ${forwardFrom}]`;
+
+          logger.info(`尝试重启下载任务: ${item.fileName}, 文件ID: ${item.fileId.substring(0, 20)}...`);
+
+          // Generate taskId to store in downloadTasks map for notification purposes
+          const taskId = `${item.chatId}_${item.messageId}`;
+
+          // Store task info for notification purposes - assume it's a private chat for forwarded items
+          // Check if this chat is configured in the config
+          const isConfiguredChat = this.config.chat?.some(c => {
+            const configChatId = c.chat_id.toString();
+            return configChatId === item.chatId || configChatId === `-${item.chatId}`;
+          }) || false;
+
+          // For forwarded items, consider as private if not configured in chat list
+          const isPrivateChat = !isConfiguredChat;
+
+          // Remove any existing task info to avoid conflicts
+          this.downloadTasks.delete(taskId);
+
+          this.downloadTasks.set(taskId, {
+            chatId: item.chatId,
+            messageId: item.messageId,
+            fileName: item.fileName,
+            isPrivateChat: isPrivateChat,
+            chatTitle: augmentedChatTitle,
+            mediaType: mediaType
+          });
+
+          // Add to download manager without awaiting to avoid blocking
+          // Mark this as a forced fresh download from queue
+          this.downloadManager.addDownloadTask({
+            message: syntheticMessage,
+            chatId: item.chatId,
+            chatTitle: augmentedChatTitle,
+            mediaType: mediaType,
+            fileId: item.fileId,
+            fileName: item.fileName,
+            // Mark this as a forced fresh download from queue
+            forceFreshDownload: true
+          }).then(() => {
+            logger.info(`成功重启下载任务: ${item.fileName}`);
+          }).catch(error => {
+            logger.error(`重启下载任务失败: ${item.fileName}`, error);
+            // If failed, set back to pending and remove from downloadTasks if added
+            this.forwardedQueue.updateStatus(item.chatId, item.messageId, 'pending');
+            this.downloadTasks.delete(taskId);
+          });
+
+          logger.info(`已发送重启下载请求: ${item.fileName}`);
+
+        } catch (error) {
+          logger.error(`重启转发下载异常: ${item.fileName}`, error);
+          this.forwardedQueue.updateStatus(item.chatId, item.messageId, 'pending');
+        }
+      } else {
+        logger.debug(`跳过项目: ${item.fileName} (已在处理中或状态正常)`);
+      }
+    }
+    logger.info('转发队列处理完成');
+  }
+
+  /**
+   * Check if an abandoned download should be restarted
+   * (if it's been in 'downloading' status for more than 2 hours)
+   */
+  shouldRestartAbandonedDownload(item) {
+    if (item.status === 'downloading' && item.startedAt) {
+      try {
+        // Parse the startedAt time - this should be in ISO format
+        const startedDate = new Date(item.startedAt);
+        const startedTime = startedDate.getTime();
+
+        // Get current time
+        const currentDate = new Date();
+        const currentTime = currentDate.getTime();
+
+        // Calculate difference in milliseconds
+        const diffInMillis = currentTime - startedTime;
+        const diffInMinutes = diffInMillis / (1000 * 60);
+        const diffInHours = diffInMillis / (1000 * 60 * 60);
+
+        logger.info(`检查重启 ${item.fileName}, 开始于: ${item.startedAt}, 当前时间: ${currentDate.toISOString()}, 时差: ${diffInMinutes.toFixed(2)} 分钟 (${diffInHours.toFixed(2)} 小时)`);
+
+        // Increase the threshold to 2 hours instead of 30 minutes to avoid frequent restarts
+        const THRESHOLD_HOURS = 2.0; // 2 hours instead of 0.5 hours
+        const shouldRestart = diffInHours > THRESHOLD_HOURS;
+
+        logger.info(`应重启: ${shouldRestart}, 阈值: ${THRESHOLD_HOURS}小时, 实际: ${diffInHours.toFixed(2)} 小时`);
+
+        return shouldRestart;
+      } catch (error) {
+        logger.error(`检查重启下载时出错: ${error.message}`);
+        return false; // Default to false on error
+      }
+    }
+    return false;
   }
 
   /**
@@ -814,6 +1261,151 @@ class TelegramMediaDownloader {
     }
     return true;
   }
+
+  /**
+   * 获取转发待下载队列状态
+   */
+  getForwardedQueueStatus() {
+    if (this.forwardedQueue) {
+      return this.forwardedQueue.getQueueStatus();
+    }
+    return {
+      total: 0,
+      pending: 0,
+      downloading: 0,
+      items: []
+    };
+  }
+
+  /**
+   * 恢复未完成的下载任务（重构版）
+   * 在程序启动时调用，使用新的未完成下载管理器
+   */
+  async restoreUnfinishedDownloads() {
+    if (!this.unfinishedDownloadManager) {
+      logger.info('未完成下载管理器未初始化，跳过恢复');
+      return;
+    }
+
+    logger.info('开始恢复未完成的下载任务...');
+
+    try {
+      // Check the download manager's current queue and active downloads to avoid duplicates
+      const currentQueueIds = new Set(this.downloadManager.downloadQueue.map(task => `${task.chatId}_${task.messageId}`));
+      const currentActiveIds = new Set(Array.from(this.downloadManager.activeDownloads.keys()));
+
+      // 使用新的管理器来恢复所有未完成的下载
+      const restoreResult = await this.unfinishedDownloadManager.restoreAllUnfinished(async (task) => {
+        try {
+          // Check if the task already exists in queue or active downloads
+          const taskId = `${task.chatId}_${task.messageId || Date.now()}`;
+          const duplicateInQueue = this.downloadManager.downloadQueue.some(t =>
+            t.chatId === task.chatId &&
+            (t.messageId === task.messageId ||
+             (t.fileId && task.fileId && t.fileId === task.fileId))
+          );
+          const duplicateInActive = this.downloadManager.activeDownloads.has(taskId) ||
+            Array.from(this.downloadManager.activeDownloads.values()).some(t =>
+              t.chatId === task.chatId &&
+              (t.messageId === task.messageId ||
+               (t.fileId && task.fileId && t.fileId === task.fileId))
+            );
+
+          if (duplicateInQueue || duplicateInActive) {
+            logger.warn(`恢复任务已存在，跳过重复添加: ${task.fileName || '文件'} (chatId: ${task.chatId}, messageId: ${task.messageId})`);
+            return { success: true, skipped: true }; // Return success but indicate it was skipped
+          }
+
+          // 根据任务类型创建相应的下载任务
+          let downloadTask;
+
+          switch (task.type) {
+            case 'history_incomplete':
+            case 'file_incomplete':
+              // Create task to resume from specific byte offset
+              downloadTask = {
+                message: {
+                  message_id: task.messageId,
+                  date: Math.floor(Date.now() / 1000),
+                  [task.mediaType]: {
+                    file_id: task.fileId,
+                    file_name: task.fileName
+                  }
+                },
+                chatId: task.chatId,
+                chatTitle: `恢复任务_${task.chatId}`,
+                mediaType: task.mediaType,
+                fileId: task.fileId,
+                fileName: task.fileName || '恢复下载',
+                startBytes: task.startBytes || 0, // Start from specific byte offset for resume
+                originalTask: task.originalTask
+              };
+              break;
+
+            case 'forwarded_pending':
+              // Create task for forwarded item
+              downloadTask = {
+                message: {
+                  message_id: task.messageId,
+                  date: Math.floor(Date.now() / 1000),
+                  [task.mediaType]: {
+                    file_id: task.fileId,
+                    file_name: task.fileName
+                  }
+                },
+                chatId: task.chatId,
+                chatTitle: `转发恢复_${task.chatId}`,
+                mediaType: task.mediaType,
+                fileId: task.fileId,
+                fileName: task.fileName || '转发恢复',
+                originalTask: task.originalTask
+              };
+              break;
+
+            case 'orphaned_missing':
+            case 'orphaned_incomplete':
+              // Create task for orphaned file
+              downloadTask = {
+                message: {
+                  message_id: task.messageId,
+                  date: Math.floor(Date.now() / 1000),
+                  [task.mediaType]: {
+                    file_id: task.fileId,
+                    file_name: task.fileName
+                  }
+                },
+                chatId: task.chatId,
+                chatTitle: `孤儿恢复_${task.chatId}`,
+                mediaType: task.mediaType,
+                fileId: task.fileId,
+                fileName: task.fileName || '孤儿恢复',
+                startBytes: task.startBytes || 0,
+                originalTask: task.originalTask
+              };
+              break;
+
+            default:
+              logger.warn(`未知的任务类型: ${task.type}`, task);
+              return { success: false, error: `Unknown task type: ${task.type}` };
+          }
+
+          // Add to download manager with proper start byte offset support
+          await this.downloadManager.addDownloadTask(downloadTask);
+
+          logger.info(`已添加恢复任务到下载队列: ${task.fileName} (类型: ${task.type})`);
+          return { success: true };
+
+        } catch (error) {
+          logger.error(`添加恢复任务失败: ${task.fileName}`, error);
+          return { success: false, error: error.message };
+        }
+      });
+
+      logger.info(`完成未完成下载任务恢复: 成功 ${restoreResult} 个`);
+    } catch (error) {
+      logger.error('恢复未完成下载任务时出错:', error);
+    }
+  }
 }
 
 // 启动应用
@@ -829,5 +1421,11 @@ process.on('SIGINT', async () => {
   if (app.client) {
     await app.client.disconnect();
   }
+
+  // Stop forwarded queue processor
+  if (app.stopForwardedQueueProcessor) {
+    app.stopForwardedQueueProcessor();
+  }
+
   process.exit(0);
 });
