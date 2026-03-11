@@ -1,1 +1,0 @@
-CreateObject("Wscript.Shell").Run "npm run dev",0

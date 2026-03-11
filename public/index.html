@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TG Media Downloader Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        [v-cloak] { display: none; }
+        .tab-btn.active { border-bottom: 2px solid #3b82f6; color: #3b82f6; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div id="app" class="container mx-auto px-4 py-8">
+        <header class="mb-8 flex justify-between items-center bg-white p-6 rounded-lg shadow">
+            <div>
+                <h1 class="text-3xl font-bold text-blue-600">🤖 TG Media Downloader</h1>
+                <p class="text-gray-500 text-sm">Professional Telegram Media Management</p>
+            </div>
+            <div id="stats" class="flex space-x-4 text-sm">
+                <div class="bg-blue-50 p-3 rounded border border-blue-100">⏳ Queue: <span id="stat-queue" class="font-bold text-blue-700">0</span></div>
+                <div class="bg-green-50 p-3 rounded border border-green-100">📥 Active: <span id="stat-active" class="font-bold text-green-700">0</span></div>
+                <div class="bg-purple-50 p-3 rounded border border-purple-100">✅ Total: <span id="stat-total" class="font-bold text-purple-700">0</span></div>
+            </div>
+        </header>
+
+        <div class="flex space-x-4 mb-6 border-b">
+            <button onclick="showTab('main')" id="tab-main" class="tab-btn px-4 py-2 font-medium active">Dashboard</button>
+            <button onclick="showTab('settings')" id="tab-settings" class="tab-btn px-4 py-2 font-medium">Settings & Proxy</button>
+            <button onclick="showTab('history')" id="tab-history" class="tab-btn px-4 py-2 font-medium">History</button>
+        </div>
+
+        <div id="content-main" class="tab-content grid grid-cols-1 lg:grid-cols-4 gap-8">
+            <!-- Sidebar: Channels -->
+            <div class="lg:col-span-1 space-y-6">
+                <section class="bg-white p-6 rounded-lg shadow">
+                    <h2 class="text-xl font-semibold mb-4 border-b pb-2 flex justify-between items-center">
+                        <span>📺 Channels</span>
+                        <button onclick="loadChannels()" class="text-xs text-blue-500 hover:underline">Refresh</button>
+                    </h2>
+                    <ul id="channel-list" class="space-y-2 mb-4 max-h-60 overflow-y-auto">
+                        <li class="text-gray-500 italic">No channels connected</li>
+                    </ul>
+                    <div class="space-y-2">
+                        <input type="text" id="new-channel" placeholder="Channel username or link" class="w-full px-3 py-2 border rounded text-sm">
+                        <button onclick="connectChannel()" class="w-full bg-blue-500 text-white py-2 rounded hover:bg-blue-600 transition">Connect</button>
+                    </div>
+                </section>
+
+                <section class="bg-white p-6 rounded-lg shadow">
+                    <h2 class="text-xl font-semibold mb-4 border-b pb-2">🔑 Account Status</h2>
+                    <div id="login-status-container">
+                        <div id="login-checking" class="text-sm text-gray-600 italic">Checking status...</div>
+                        
+                        <div id="user-profile" class="hidden space-y-3">
+                            <div class="flex items-center space-x-3">
+                                <div id="user-avatar-container" class="w-12 h-12 rounded-full overflow-hidden bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-xl border">
+                                    <!-- Will be replaced by IMG or text -->
+                                    <span id="user-avatar-placeholder">?</span>
+                                </div>
+                                <div>
+                                    <div class="font-bold text-gray-800" id="user-name">Unknown User</div>
+                                    <div class="text-xs text-gray-500" id="user-username">@username</div>
+                                </div>
+                            </div>
+                            <div class="text-[10px] bg-green-50 text-green-700 px-2 py-1 rounded border border-green-100 inline-block">Authenticated</div>
+                        </div>
+
+                        <!-- Login Form (Hidden by default) -->
+                        <div id="login-form" class="hidden space-y-2">
+                            <p class="text-xs text-gray-500 mb-2">Please login to your Telegram account</p>
+                            <input type="text" id="login-phone" placeholder="+86138..." class="w-full px-3 py-2 border rounded text-sm">
+                            <button onclick="sendCode()" class="w-full bg-green-500 text-white py-2 rounded hover:bg-green-600 transition">Send Code</button>
+                            <div id="code-entry" class="hidden space-y-2 mt-2">
+                                <input type="text" id="login-code" placeholder="Verification Code" class="w-full px-3 py-2 border rounded text-sm">
+                                <button onclick="signIn()" class="w-full bg-indigo-500 text-white py-2 rounded hover:bg-indigo-600 transition">Sign In</button>
+                                <p class="text-[10px] text-gray-400 italic mt-1">Enter the code exactly as received.</p>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+
+            <!-- Main: Search & Tasks -->
+            <div class="lg:col-span-3 space-y-8">
+                <!-- Search Section -->
+                <section class="bg-white p-6 rounded-lg shadow">
+                    <div class="flex items-center justify-between mb-4 border-b pb-2">
+                        <h2 class="text-xl font-semibold">🔍 Search Media</h2>
+                        <div class="flex space-x-2">
+                            <button onclick="searchRecent()" class="text-sm bg-gray-200 px-3 py-1 rounded hover:bg-gray-300">Recent</button>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                        <input type="text" id="search-keyword" placeholder="Keyword..." class="px-3 py-2 border rounded">
+                        <select id="search-media-type" onchange="searchRecent()" class="px-3 py-2 border rounded text-sm">
+                            <option value="">All Media</option>
+                            <option value="video">Video</option>
+                            <option value="photo">Photo</option>
+                            <option value="document">Document</option>
+                            <option value="audio">Music/Audio</option>
+                            <option value="voice">Voice</option>
+                            <option value="animation">GIF/Animation</option>
+                        </select>
+                        <div class="flex space-x-2">
+                            <input type="date" id="search-start" class="w-1/2 px-2 py-2 border rounded text-xs">
+                            <input type="date" id="search-end" class="w-1/2 px-2 py-2 border rounded text-xs">
+                        </div>
+                        <div class="flex space-x-2">
+                            <button onclick="searchKeyword()" class="flex-1 bg-blue-500 text-white rounded hover:bg-blue-600">Search</button>
+                            <button onclick="searchTime()" class="flex-1 bg-purple-500 text-white rounded hover:bg-purple-600">By Date</button>
+                        </div>
+                    </div>
+
+                    <div id="search-results-container" class="hidden">
+                        <div class="flex justify-between items-center mb-2">
+                            <h3 class="font-bold text-gray-700">Results (<span id="results-count">0</span>)</h3>
+                            <div class="flex items-center space-x-2">
+                                <select id="forward-to" class="px-2 py-1 border rounded text-xs w-48">
+                                    <option value="">Select destination to forward</option>
+                                </select>
+                                <button onclick="forwardSelected()" class="bg-indigo-600 text-white px-3 py-1 rounded text-sm hover:bg-indigo-700 shadow-sm transition">Forward</button>
+                                <button onclick="downloadSelected()" class="bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700 shadow-sm transition">Download</button>
+                            </div>
+                        </div>
+                        <div class="overflow-x-auto border rounded">
+                            <table class="w-full text-left text-sm">
+                                <thead class="bg-gray-50 border-b">
+                                    <tr>
+                                        <th class="p-2"><input type="checkbox" onchange="toggleAll(this)"></th>
+                                        <th class="p-2">Name</th>
+                                        <th class="p-2">Size</th>
+                                        <th class="p-2">Date</th>
+                                        <th class="p-2">Type</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="search-results-list" class="divide-y">
+                                    <!-- Dynamic -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Active Tasks -->
+                <section class="bg-white p-6 rounded-lg shadow">
+                    <div class="flex justify-between items-center mb-4 border-b pb-2">
+                        <div class="flex items-center space-x-4">
+                            <h2 class="text-xl font-semibold">📥 Active Queue</h2>
+                            <div class="flex space-x-2">
+                                <button onclick="deleteSelectedTasks()" class="text-[10px] bg-red-50 text-red-600 px-2 py-1 rounded border border-red-100 hover:bg-red-100">Delete Selected</button>
+                                <button onclick="clearQueue()" class="text-[10px] bg-gray-50 text-gray-600 px-2 py-1 rounded border border-gray-200 hover:bg-gray-100">Clear All</button>
+                            </div>
+                        </div>
+                        <button onclick="retryFailed()" class="text-xs bg-orange-100 text-orange-700 px-2 py-1 rounded border border-orange-200 hover:bg-orange-200">Retry Failed</button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="p-2 w-8"><input type="checkbox" onchange="toggleAllQueue(this)"></th>
+                                    <th class="p-2">File Name</th>
+                                    <th class="p-2">Status</th>
+                                    <th class="p-2">Progress</th>
+                                    <th class="p-2">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="queue-list" class="divide-y">
+                                <!-- Dynamic -->
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+        </div>
+
+        <div id="content-settings" class="tab-content hidden space-y-8">
+            <section class="bg-white p-8 rounded-lg shadow max-w-2xl mx-auto">
+                <h2 class="text-2xl font-bold mb-6 border-b pb-4 text-gray-800">🌐 Proxy Configuration</h2>
+                <div class="space-y-4">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Scheme</label>
+                            <select id="proxy-scheme" class="w-full px-3 py-2 border rounded">
+                                <option value="http">HTTP</option>
+                                <option value="socks5">SOCKS5</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Hostname</label>
+                            <input type="text" id="proxy-host" placeholder="127.0.0.1" class="w-full px-3 py-2 border rounded">
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Port</label>
+                            <input type="number" id="proxy-port" placeholder="1080" class="w-full px-3 py-2 border rounded">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Username (Optional)</label>
+                            <input type="text" id="proxy-user" class="w-full px-3 py-2 border rounded">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Password (Optional)</label>
+                            <input type="password" id="proxy-pass" class="w-full px-3 py-2 border rounded">
+                        </div>
+                    </div>
+                    <div class="pt-4">
+                        <button onclick="saveProxy()" class="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700 transition shadow-lg">Save & Apply Proxy Settings</button>
+                        <p class="text-xs text-gray-500 mt-2 italic text-center">* Changes will require a restart to fully apply to MTProto clients.</p>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <div id="content-history" class="tab-content hidden space-y-8">
+            <section class="bg-white p-6 rounded-lg shadow">
+                <h2 class="text-xl font-semibold mb-4 border-b pb-2">📜 Completed History</h2>
+                <div id="history-list" class="space-y-4">
+                    <!-- Dynamic -->
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script>
+        let currentResults = [];
+
+        async function fetchApi(path, options = {}) {
+            try {
+                const res = await fetch('/api' + path, {
+                    ...options,
+                    headers: { 'Content-Type': 'application/json', ...options.headers }
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'API Error');
+                return data;
+            } catch (err) {
+                console.error(err);
+                alert(err.message);
+                throw err;
+            }
+        }
+
+        function showTab(tab) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+            document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+            document.getElementById('content-' + tab).classList.remove('hidden');
+            document.getElementById('tab-' + tab).classList.add('active');
+            if (tab === 'settings') loadConfig();
+            if (tab === 'history') loadHistory();
+        }
+
+        async function updateStats() {
+            const stats = await fetchApi('/stats');
+            document.getElementById('stat-queue').innerText = stats.queued_tasks;
+            document.getElementById('stat-active').innerText = stats.active_tasks;
+            document.getElementById('stat-total').innerText = stats.total_downloads;
+            
+            const queue = await fetchApi('/queue');
+            // Sort: downloading first, then by creation time
+            queue.sort((a, b) => {
+                if (a.status === 'downloading' && b.status !== 'downloading') return -1;
+                if (a.status !== 'downloading' && b.status === 'downloading') return 1;
+                return new Date(b.created_at) - new Date(a.created_at);
+            });
+            
+            const tbody = document.getElementById('queue-list');
+            tbody.innerHTML = queue.map(t => {
+                const progressColor = t.status === 'downloading' ? 'bg-blue-500' : t.status === 'failed' ? 'bg-red-500' : 'bg-gray-300';
+                return `
+                <tr>
+                    <td class="p-2"><input type="checkbox" class="queue-check" data-id="${t.task_id}"></td>
+                    <td class="p-2 max-w-xs truncate" title="${t.file_name}">${t.file_name}</td>
+                    <td class="p-2">
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase ${t.status === 'failed' ? 'bg-red-100 text-red-700' : t.status === 'downloading' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700'}">${t.status}</span>
+                    </td>
+                    <td class="p-2 w-32">
+                        <div class="w-full bg-gray-200 rounded-full h-1.5 mb-1">
+                            <div class="${progressColor} h-1.5 rounded-full transition-all duration-500" style="width: ${t.progress || 0}%"></div>
+                        </div>
+                        <span class="text-[10px] text-gray-500">${t.progress || 0}%</span>
+                    </td>
+                    <td class="p-2 text-right">
+                        <button onclick="deleteTask('${t.task_id}')" class="text-red-500 hover:text-red-700">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                        </button>
+                    </td>
+                </tr>
+            `}).join('') || '<tr><td colspan="5" class="p-4 text-center text-gray-400 italic">Queue is empty</td></tr>';
+        }
+
+        function toggleAllQueue(cb) {
+            document.querySelectorAll('.queue-check').forEach(el => el.checked = cb.checked);
+        }
+
+        async function deleteSelectedTasks() {
+            const ids = Array.from(document.querySelectorAll('.queue-check:checked')).map(el => el.dataset.id);
+            if (ids.length === 0) return;
+            if (!confirm(`Are you sure you want to delete ${ids.length} selected tasks?`)) return;
+            
+            await fetchApi('/queue/batch-delete', { 
+                method: 'POST', 
+                body: JSON.stringify({ task_ids: ids }) 
+            });
+            updateStats();
+        }
+
+        async function clearQueue() {
+            if (!confirm('Are you sure you want to CLEAR THE ENTIRE QUEUE? This cannot be undone.')) return;
+            await fetchApi('/queue/clear', { method: 'POST' });
+            updateStats();
+        }
+
+        async function loadChannels() {
+            const channels = await fetchApi('/channels');
+            const list = document.getElementById('channel-list');
+            list.innerHTML = channels.map(c => `
+                <li class="p-3 bg-gray-50 rounded border text-sm flex justify-between items-center hover:bg-gray-100 transition shadow-sm">
+                    <div>
+                        <b class="text-gray-800">${c.title}</b>
+                        <div class="text-[10px] text-gray-500">@${c.username || 'N/A'} | ${c.channel_id}</div>
+                    </div>
+                </li>
+            `).join('') || '<li class="text-gray-500 italic text-center py-4">No channels connected</li>';
+        }
+
+        async function connectChannel() {
+            const id = document.getElementById('new-channel').value;
+            if (!id) return;
+            await fetchApi('/channels/connect', { method: 'POST', body: JSON.stringify({ identifier: id }) });
+            document.getElementById('new-channel').value = '';
+            loadChannels();
+        }
+
+        async function searchRecent() {
+            const mediaType = document.getElementById('search-media-type').value;
+            const data = await fetchApi('/search/recent', { 
+                method: 'POST', 
+                body: JSON.stringify({ limit: 50, media_type: mediaType }) 
+            });
+            renderResults(data);
+        }
+
+        async function searchKeyword() {
+            const kw = document.getElementById('search-keyword').value;
+            const mediaType = document.getElementById('search-media-type').value;
+            if (!kw) return;
+            const data = await fetchApi('/search/keyword', { 
+                method: 'POST', 
+                body: JSON.stringify({ keyword: kw, media_type: mediaType }) 
+            });
+            renderResults(data);
+        }
+
+        async function searchTime() {
+            const start = document.getElementById('search-start').value;
+            const end = document.getElementById('search-end').value;
+            const mediaType = document.getElementById('search-media-type').value;
+            if (!start || !end) return;
+            const data = await fetchApi('/search/time', { 
+                method: 'POST', 
+                body: JSON.stringify({ start_date: start, end_date: end, media_type: mediaType }) 
+            });
+            renderResults(data);
+        }
+
+        function renderResults(messages) {
+            currentResults = messages;
+            document.getElementById('search-results-container').classList.remove('hidden');
+            document.getElementById('results-count').innerText = messages.length;
+            const tbody = document.getElementById('search-results-list');
+            tbody.innerHTML = messages.map(m => `
+                <tr>
+                    <td class="p-2"><input type="checkbox" class="result-check" data-id="${m.id}" data-chat="${m.chat_id}"></td>
+                    <td class="p-2 font-mono text-[10px] max-w-xs truncate" title="${m.file_name || m.text}">${m.file_name || m.text?.substring(0,40) || 'media_' + m.id}</td>
+                    <td class="p-2 text-xs">${(m.file_size / 1024 / 1024).toFixed(2)} MB</td>
+                    <td class="p-2 text-[10px]">${new Date(m.date).toLocaleDateString()}</td>
+                    <td class="p-2"><span class="px-2 py-0.5 bg-gray-100 rounded text-[9px] font-bold uppercase text-gray-600">${m.media_type}</span></td>
+                </tr>
+            `).join('');
+            
+            // Auto-load dialogs if not already loaded
+            if (document.getElementById('forward-to').options.length <= 1) {
+                loadDialogs();
+            }
+        }
+
+        async function loadDialogs() {
+            try {
+                const dialogs = await fetchApi('/dialogs');
+                const select = document.getElementById('forward-to');
+                select.innerHTML = '<option value="">Select destination to forward</option>';
+                dialogs.forEach(d => {
+                    const type = d.is_channel ? 'Channel' : d.is_group ? 'Group' : 'User';
+                    const option = document.createElement('option');
+                    option.value = d.id;
+                    option.textContent = `[${type}] ${d.name}`;
+                    select.appendChild(option);
+                });
+            } catch (err) {
+                console.error("Failed to load dialogs", err);
+            }
+        }
+
+        async function forwardSelected() {
+            const selected = Array.from(document.querySelectorAll('.result-check:checked'));
+            if (selected.length === 0) {
+                alert("Please select messages to forward");
+                return;
+            }
+            
+            const toChatId = document.getElementById('forward-to').value;
+            if (!toChatId) {
+                alert("Please select a destination chat");
+                return;
+            }
+            
+            const byChat = {};
+            selected.forEach(el => {
+                const chatId = el.dataset.chat;
+                const msgId = parseInt(el.dataset.id);
+                if (!byChat[chatId]) byChat[chatId] = [];
+                byChat[chatId].push(msgId);
+            });
+            
+            let total = 0;
+            for (const fromChatId in byChat) {
+                await fetchApi('/messages/forward', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        from_channel_id: fromChatId,
+                        message_ids: byChat[fromChatId],
+                        to_chat_id: toChatId
+                    })
+                });
+                total += byChat[fromChatId].length;
+            }
+            
+            alert(`Successfully forwarded ${total} messages`);
+        }
+
+        function toggleAll(cb) {
+            document.querySelectorAll('.result-check').forEach(el => el.checked = cb.checked);
+        }
+
+        async function downloadSelected() {
+            const ids = Array.from(document.querySelectorAll('.result-check:checked')).map(el => parseInt(el.dataset.id));
+            if (ids.length === 0) return;
+            
+            await fetchApi('/download/batch', { 
+                method: 'POST', 
+                body: JSON.stringify({ 
+                    message_ids: ids
+                }) 
+            });
+            alert(`Added ${ids.length} tasks to queue`);
+            updateStats();
+        }
+
+        async function deleteTask(taskId) {
+            if (!confirm('Are you sure you want to delete this task?')) return;
+            await fetchApi('/queue/delete', { method: 'POST', body: JSON.stringify({ task_id: taskId }) });
+            updateStats();
+        }
+
+        async function retryFailed() {
+            await fetchApi('/queue/retry-failed', { method: 'POST' });
+            updateStats();
+        }
+
+        async function loadConfig() {
+            const cfg = await fetchApi('/config');
+            if (cfg.proxy) {
+                document.getElementById('proxy-scheme').value = cfg.proxy.scheme;
+                document.getElementById('proxy-host').value = cfg.proxy.hostname;
+                document.getElementById('proxy-port').value = cfg.proxy.port;
+                document.getElementById('proxy-user').value = cfg.proxy.username || '';
+                document.getElementById('proxy-pass').value = cfg.proxy.password || '';
+            }
+        }
+
+        async function saveProxy() {
+            const payload = {
+                scheme: document.getElementById('proxy-scheme').value,
+                hostname: document.getElementById('proxy-host').value,
+                port: parseInt(document.getElementById('proxy-port').value),
+                username: document.getElementById('proxy-user').value || null,
+                password: document.getElementById('proxy-pass').value || null
+            };
+            await fetchApi('/config/proxy', { method: 'POST', body: JSON.stringify(payload) });
+            alert('Proxy settings saved! Restart the application to fully apply changes to Telegram clients.');
+        }
+
+        async function loadHistory() {
+            const data = await fetchApi('/history?size=50');
+            const list = document.getElementById('history-list');
+            list.innerHTML = data.items.map(h => `
+                <div class="p-4 bg-gray-50 rounded border flex justify-between items-center">
+                    <div>
+                        <div class="font-bold text-gray-800">${h.file_name}</div>
+                        <div class="text-xs text-gray-500">${(h.file_size/1024/1024).toFixed(2)} MB | ${h.media_type} | ${new Date(h.downloaded_at || h.completed_at).toLocaleString()}</div>
+                    </div>
+                    <div class="text-green-600 font-bold text-xs uppercase">Completed</div>
+                </div>
+            `).join('') || '<p class="text-gray-500 italic text-center">No history found</p>';
+        }
+
+        async function checkLoginStatus() {
+            const statusDiv = document.getElementById('login-checking');
+            const profileDiv = document.getElementById('user-profile');
+            const formDiv = document.getElementById('login-form');
+            
+            try {
+                const me = await fetchApi('/me');
+                statusDiv.classList.add('hidden');
+                
+                if (me.logged_in) {
+                    profileDiv.classList.remove('hidden');
+                    formDiv.classList.add('hidden');
+                    document.getElementById('user-name').innerText = (me.first_name || '') + ' ' + (me.last_name || '');
+                    document.getElementById('user-username').innerText = me.username ? '@' + me.username : (me.phone || 'No username');
+                    
+                    // Avatar logic
+                    const container = document.getElementById('user-avatar-container');
+                    if (me.avatar_url) {
+                        container.innerHTML = `<img src="${me.avatar_url}" class="w-full h-full object-cover">`;
+                    } else {
+                        const initial = me.first_name ? me.first_name[0].toUpperCase() : '?';
+                        container.innerHTML = `<span id="user-avatar-placeholder">${initial}</span>`;
+                    }
+                } else {
+                    profileDiv.classList.add('hidden');
+                    formDiv.classList.remove('hidden');
+                }
+            } catch (err) {
+                console.error("Failed to check login status", err);
+                statusDiv.innerText = "Error checking status";
+            }
+        }
+
+        async function sendCode() {
+            const phone = document.getElementById('login-phone').value;
+            if (!phone) return alert("Please enter phone number");
+            await fetchApi('/login/send-code', { method: 'POST', body: JSON.stringify({ phone }) });
+            document.getElementById('code-entry').classList.remove('hidden');
+            // Notification or status update
+            const btn = event.target;
+            btn.innerText = "Code Sent";
+            btn.disabled = true;
+            setTimeout(() => { btn.innerText = "Resend Code"; btn.disabled = false; }, 30000);
+        }
+
+        async function signIn() {
+            const code = document.getElementById('login-code').value;
+            if (!code) return alert("Please enter code");
+            await fetchApi('/login/sign-in', { method: 'POST', body: JSON.stringify({ code }) });
+            alert('Signed in successfully!');
+            await checkLoginStatus();
+        }
+
+        // Init
+        checkLoginStatus();
+        updateStats();
+        loadChannels();
+        setInterval(updateStats, 5000);
+    </script>
+</body>
+</html>

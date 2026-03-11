@@ -1,142 +1,38 @@
-# 远程 Telegram Bot API 服务器配置
-# 注意：敏感信息应放在 .env 文件中
-# 如果 .env 文件存在，将从 .env 文件读取以下配置：
-# - BOT_API_HOST
-# - PUBLIC_FILE_BASE_URL
-# - TG_BASE_DIR
-remote_api:
-  # Bot API 服务器地址（必需，指向本地 Bot API 服务器）
-  # 如果设置了环境变量 BOT_API_HOST，将优先使用环境变量
-  bot_api_host: BOT_API_HOST
-  # 公网文件访问基础 URL（必需，用于下载文件）
-  # 如果设置了环境变量 PUBLIC_FILE_BASE_URL，将优先使用环境变量
-  public_file_base_url: PUBLIC_FILE_BASE_URL
-  # Telegram Bot 基础目录（可选，默认 /media/TGbot）
-  # 如果设置了环境变量 TG_BASE_DIR，将优先使用环境变量
-  tg_base_dir: TG_BASE_DIR
-  # API 请求超时时间（毫秒，默认 90000，即 90 秒）
-  # 注意：此参数已不再使用，改为使用 single_request_timeout
-  # 保留此参数以兼容旧配置
-  api_timeout: 90000
-  # 单次请求超时时间（毫秒，默认 30000，即 30 秒）
-  # 降低单次请求超时时间，允许快速失败后继续轮询
-  # 如果服务器响应很慢，可以适当增加到 60 秒
-  single_request_timeout: 30000
-  # 最大并发 API 请求数（默认 1，以减少服务器压力）
-  # 限制同时获取文件信息的请求数，避免服务器压力过大导致超时
-  # 建议值：1，如果经常超时可以降低到 1
-  max_api_concurrent: 1
-  # 文件轮询间隔（毫秒，默认 3000，即 3 秒）
-  # 自建 Bot Server 需要先下载文件才能获取路径，此参数控制轮询间隔
-  file_poll_interval: 3000
-  # 最大轮询时间（毫秒，默认 300000，即 5 分钟）
-  # 如果文件在指定时间内仍未准备好，将放弃并报错
-  # 对于大文件，可以增加到 30 分钟（1800000）或更长
-  max_poll_time: 1800000
-
-# Bot Token (必需，用于调用 Bot API)
-# 注意：敏感信息应放在 .env 文件中，这里可以使用占位符
-# 如果 .env 文件存在，将从 .env 文件读取 BOT_TOKEN
-bot_token: BOT_TOKEN
-
-# 聊天配置列表
-# 注意：用户直接发给 Bot 的私聊消息会自动处理，无需在此配置
-chat:
-  - chat_id: telegram_chat_id
-    last_read_message_id: 0
-    download_filter: message_date >= 2022-12-01 00:00:00 and message_date <= 2023-01-17 00:00:00
-  - chat_id: telegram_chat_id_2
-    last_read_message_id: 0
-
-# 是否处理用户直接发给 Bot 的私聊消息（默认 true）
-enable_private_chat: true
-
-# 媒体类型配置
-media_types:
-  - audio
-  - document
-  - photo
-  - video
-  - voice
-  - animation
-
-# 文件格式过滤
-file_formats:
-  audio:
-    - all
-  document:
-    - pdf
-    - epub
-  video:
-    - mp4
-
-# 保存路径
-save_path: ./downloads
-
-# 是否将同一频道的文件组合在一起（禁用按月分组）
-# 当设置为 true 时，所有来自同一频道的文件将存储在同一个文件夹中
-# 与 file_path_prefix 配置结合使用效果更佳
-group_same_channel_files: true
-
-# 文件路径前缀（文件夹结构）
-# Use "chat_title" to group files by channel
-# Use "media_datetime" to separate files by date (creates monthly folders)
-# Use "media_type" to separate by file type (video, audio, etc.)
-file_path_prefix:
-  - chat_title
-  # - media_datetime  # Comment out this line to avoid monthly folders and group all files from same channel together
-
-# 文件名前缀
-file_name_prefix:
-  - message_id
-  - file_name
-
-file_name_prefix_split: ' - '
-
-# 最大并发下载任务数（建议根据网络带宽调整：3-5，以减少服务器压力）
-max_download_task: 3
-
-# 是否始终重新开始下载（而非断点续传）
-# 当设置为 true 时，不管之前的下载进度如何，都重新开始下载
-always_fresh_download: false
-
-# 批处理配置（优化大量文件下载）
-batch_size: 20
-batch_interval: 500
-
-# 自适应并发控制（根据成功率自动调整并发数）
 adaptive_concurrency: true
-concurrency_adjustment_interval: 30000  # 30秒调整一次
-
-# 语言设置
-language: EN
-
-# 允许使用 Bot 的用户 ID
 allowed_user_ids:
-  - 'me'
-
-# 日期格式
+- me
+always_fresh_download: false
+batch_interval: 500
+batch_size: 20
+bot_token: 8479400961:AAHKK-Ke9HO4sXrIM-MuiRyYX75emIuu7os
+chat: []
 date_format: '%Y_%m'
-
-# 是否启用下载 txt 文件
-enable_download_txt: false
-
-# 是否隐藏文件名
-hide_file_name: false
-
-# 代理配置（可选）
-# proxy:
-#   scheme: socks5
-#   hostname: 127.0.0.1
-#   port: 1234
-#   username: your_username
-#   password: your_password
-
-# 云盘上传配置（可选）
-upload_drive:
-  enable_upload_file: false
-  remote_dir: drive:/telegram
-  upload_adapter: rclone
-  rclone_path: ""
-  before_upload_file_zip: false
-  after_upload_file_delete: false
+enable_private_chat: true
+file_formats: {}
+file_name_prefix:
+- message_id
+- file_name
+file_name_prefix_split: ' - '
+file_path_prefix:
+- chat_title
+group_same_channel_files: true
+max_connected_channels: 10
+max_download_task: 3
+media_types:
+- audio
+- document
+- photo
+- video
+- voice
+- animation
+proxy:
+  hostname: 127.0.0.1
+  password: null
+  port: 10808
+  scheme: socks5
+  username: null
+save_path: ./downloads
+user_api:
+  api_hash: db62a098851588b5fd97bbee6ddd1536
+  api_id: '30578955'
+  proxy: null
