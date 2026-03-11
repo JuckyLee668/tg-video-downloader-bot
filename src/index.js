@@ -2,14 +2,18 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import chalk from 'chalk';
 import { createLogger, format, transports } from 'winston';
+import { parseProxy } from './utils.js';
 import { DownloadManager } from './downloadManager.js';
 import { BotHandler } from './botHandler.js';
 import { ConfigManager } from './configManager.js';
 import { TelegramApiClient } from './telegramApiClient.js';
+import { TelegramUserClient } from './channelClient.js';
 import { DownloadHistory } from './downloadHistory.js';
 import { MessageRateLimiter } from './messageRateLimiter.js';
 import { ForwardedQueue } from './forwardedQueue.js';
 import { UnfinishedDownloadManager } from './unfinishedDownloadManager.js';
+import { DatabaseManager } from './databaseManager.js';
+import { WebServer } from './webServer.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -44,6 +48,8 @@ class TelegramMediaDownloader {
     this.messageRateLimiter = null;
     this.forwardedQueue = null; // New forwarded queue
     this.unfinishedDownloadManager = null; // New unfinished download manager
+    this.databaseManager = null; // SQLite database manager
+    this.webServer = null; // Web server for admin interface
     // 存储每个下载任务的消息信息，用于完成后发送消息
     this.downloadTasks = new Map(); // taskId -> { chatId, messageId, fileName, isPrivateChat }
   }
@@ -54,21 +60,54 @@ class TelegramMediaDownloader {
       this.config = ConfigManager.loadConfig();
       logger.info('配置加载成功');
 
+      // 初始化 SQLite 数据库管理器
+      this.databaseManager = new DatabaseManager(this.config, logger);
+      logger.info(chalk.green('✓ SQLite 数据库管理器已初始化'));
+
       // 初始化远程 Telegram Bot API 客户端
       this.apiClient = new TelegramApiClient(this.config, logger);
       await this.apiClient.checkConnection();
       logger.info(chalk.green('✓ 远程 Telegram Bot API 连接成功'));
 
+      // 如果配置了 user_api，则额外创建一个普通 user 客户端用于频道搜索/下载
+      this.userClient = null;
+      if (this.config.user_api && this.config.user_api.api_id && this.config.user_api.api_hash) {
+        try {
+          const proxy = this.config.user_api.proxy || parseProxy();
+          this.userClient = new TelegramUserClient(
+            parseInt(this.config.user_api.api_id),
+            this.config.user_api.api_hash,
+            proxy
+          );
+          this.userClient.init();
+          const status = await this.userClient.checkConnection();
+          if (status.connected) {
+            logger.info(chalk.green('✓ Telegram 用户客户端已连接 (频道功能可用)'));
+          } else {
+            logger.warn('Telegram 用户客户端尚未登录:', status.error);
+            logger.warn('📌 Telegram 用户账号账号必须登录后才能使用频道搜索功能');
+            logger.warn('推荐方式: 运行 node login-user.js 脚本进行本地登录');
+            logger.warn('备选方式: 在 Bot 中发送 /login 命令（不推荐，安全性较低）');
+          }
+        } catch (err) {
+          logger.error('创建 Telegram 用户客户端失败:', err.message);
+          logger.error('堆栈:', err.stack);
+          logger.error('请确保 USER_API_ID 和 USER_API_HASH 正确设置在 .env 文件中');
+        }
+      } else {
+        logger.warn('未配置 user_api，频道功能将不可用（USER_API_ID 或 USER_API_HASH 未设置）');
+      }
+
       // 初始化下载历史记录
-      this.downloadHistory = new DownloadHistory(this.config, logger);
+      this.downloadHistory = new DownloadHistory(this.config, logger, this.databaseManager);
       logger.info(chalk.green('✓ 下载历史记录已初始化'));
 
       // 初始化转发队列
-      this.forwardedQueue = new ForwardedQueue(this.config, logger);
+      this.forwardedQueue = new ForwardedQueue(this.config, logger, this.databaseManager);
       logger.info(chalk.green('✓ 转发待下载队列已初始化'));
 
       // 初始化未完成下载管理器
-      this.unfinishedDownloadManager = new UnfinishedDownloadManager(this.config, logger, this.downloadHistory, this.forwardedQueue);
+      this.unfinishedDownloadManager = new UnfinishedDownloadManager(this.config, logger, this.downloadHistory, this.forwardedQueue, this.databaseManager);
       logger.info(chalk.green('✓ 未完成下载管理器已初始化'));
 
       // 初始化消息发送限流器（更保守的配置）
@@ -82,8 +121,8 @@ class TelegramMediaDownloader {
       // 设置消息监听（用于接收新消息）
       this.setupMessageListener();
 
-      // 初始化下载管理器（传入下载历史记录）
-      this.downloadManager = new DownloadManager(this.config, logger, this.apiClient, this.downloadHistory);
+      // 初始化下载管理器（传入下载历史记录和可选的 userClient）
+      this.downloadManager = new DownloadManager(this.config, logger, this.apiClient, this.downloadHistory, this.userClient, this.databaseManager);
       await this.downloadManager.init();
 
       // 恢复未完成的下载任务（重构版）
@@ -99,7 +138,9 @@ class TelegramMediaDownloader {
           this.downloadManager,
           logger,
           this.apiClient,
-          this.messageRateLimiter
+          this.messageRateLimiter,
+          this.userClient,
+          this.databaseManager
         );
         await this.botHandler.init();
       }
@@ -109,10 +150,15 @@ class TelegramMediaDownloader {
       // 或者通过消息监听来处理新消息
       logger.info('Bot API 模式：将通过消息监听处理新消息');
 
+      // 初始化Web服务器
+      this.webServer = new WebServer(this);
+      this.webServer.start();
+      logger.info(chalk.green('✓ Web管理界面已启动'));
+
       logger.info(chalk.green('✓ Telegram Media Downloader 启动成功'));
 
       // Start periodic check for pending forwarded downloads
-      this.startForwardedQueueProcessor();
+      // this.startForwardedQueueProcessor(); // 禁用以防止自动转发文件
     } catch (error) {
       logger.error('初始化失败:', error);
       process.exit(1);
@@ -372,39 +418,31 @@ class TelegramMediaDownloader {
     // 监听所有消息
     bot.on('message', async (msg) => {
       try {
-        const chatId = msg.chat.id.toString();
-        const messageId = msg.message_id;
-        const chatType = msg.chat.type; // 'private', 'group', 'supergroup', 'channel'
-        
-        // 检查是否是转发的消息
-        const isForwarded = !!(msg.forward_from || msg.forward_from_chat || msg.forward_from_message_id);
-        
-        // 检查是否是私聊消息（用户直接发给 Bot）
-        const isPrivateChat = chatType === 'private';
-        
-        // 检查是否启用私聊处理
-        const enablePrivateChat = this.config.enable_private_chat !== false; // 默认 true
-        
-        // 检查是否在配置的聊天列表中
-        const chatConfig = this.config.chat?.find(c => {
-          const configChatId = c.chat_id.toString();
-          return configChatId === chatId || configChatId === `-${chatId}`;
-        });
-        
-        // 如果不在配置列表中，且（不是私聊 或 私聊未启用），则忽略
-        // 但如果是转发的消息，即使不在配置列表中，如果是私聊也处理
-        if (!chatConfig && (!isPrivateChat || !enablePrivateChat)) {
+        // 跳过命令消息（以/开头的消息 - 由 botHandler 处理）
+        if (msg.text && msg.text.startsWith('/')) {
           return;
         }
 
-        // 检查媒体类型（转发的消息和普通消息一样处理）
-        const mediaType = this.getMediaTypeFromMessage(msg);
+        const chatId = msg.chat.id.toString();
+        const messageId = msg.message_id;
+        const chatType = msg.chat.type; // 'private', 'group', 'supergroup', 'channel'
+        const userId = msg.from.id;
         
-        // 调试日志：记录收到的消息信息（特别是转发消息）
-        if (isForwarded) {
-          logger.info(`收到转发消息 - 类型: ${chatType}, 媒体类型: ${mediaType || '无'}, 消息ID: ${messageId}`);
-          logger.info(`转发消息字段: photo=${!!msg.photo}, video=${!!msg.video}, document=${!!msg.document}, audio=${!!msg.audio}, voice=${!!msg.voice}, animation=${!!msg.animation}`);
-          logger.info(`转发来源: forward_from=${!!msg.forward_from}, forward_from_chat=${!!msg.forward_from_chat}, forward_from_message_id=${msg.forward_from_message_id || '无'}`);
+        // 跳过登录流程中的用户消息
+        if (this.botHandler && this.botHandler.isUserInLoginFlow && this.botHandler.isUserInLoginFlow(userId)) {
+          return;
+        }
+        
+        // 检查是否是频道消息
+        const isChannelMessage = chatType === 'channel';
+        
+        // 调试日志：记录频道消息的详细信息
+        if (isChannelMessage) {
+          logger.info(`收到频道消息 - 频道: ${chatId}, 消息ID: ${messageId}, 类型: ${chatType}`);
+          logger.info(`频道消息媒体字段: photo=${!!msg.photo}, video=${!!msg.video}, document=${!!msg.document}, audio=${!!msg.audio}, voice=${!!msg.voice}, animation=${!!msg.animation}`);
+          if (msg.video) logger.info(`视频详情: file_name=${msg.video.file_name}, mime_type=${msg.video.mime_type}, file_id=${msg.video.file_id}`);
+          if (msg.document) logger.info(`文档详情: file_name=${msg.document.file_name}, mime_type=${msg.document.mime_type}, file_id=${msg.document.file_id}`);
+          if (msg.audio) logger.info(`音频详情: file_name=${msg.audio.file_name}, mime_type=${msg.audio.mime_type}, file_id=${msg.audio.file_id}`);
         }
         
         if (!mediaType || !this.config.media_types.includes(mediaType)) {
@@ -449,7 +487,9 @@ class TelegramMediaDownloader {
         const shouldDownload = this.shouldDownloadFileFromMessage(msg, mediaType);
         if (!shouldDownload) {
           logger.warn(`文件格式过滤：消息 ${messageId} 的媒体类型 ${mediaType} 不符合文件格式要求`);
-          logger.warn(`视频信息: file_name=${msg.video?.file_name || '无'}, mime_type=${msg.video?.mime_type || '无'}, document=${!!msg.document}`);
+          logger.warn(`消息详情: video=${!!msg.video}, document=${!!msg.document}`);
+          if (msg.video) logger.warn(`视频信息: file_name=${msg.video.file_name || '无'}, mime_type=${msg.video.mime_type || '无'}`);
+          if (msg.document) logger.warn(`文档信息: file_name=${msg.document.file_name || '无'}, mime_type=${msg.document.mime_type || '无'}`);
           if (isPrivateChat) {
             try {
               await this.messageRateLimiter.sendMessage(
@@ -597,22 +637,63 @@ class TelegramMediaDownloader {
    * 从消息中获取文件名（用于提示）
    */
   getFileNameFromMessage(msg, mediaType) {
+    let fileName = null;
+    
     switch (mediaType) {
       case 'video':
-        return msg.video?.file_name || msg.document?.file_name || '视频';
+        fileName = msg.video?.file_name || msg.document?.file_name;
+        break;
       case 'audio':
-        return msg.audio?.file_name || msg.document?.file_name || '音频';
+        fileName = msg.audio?.file_name || msg.document?.file_name;
+        break;
       case 'document':
-        return msg.document?.file_name || '文档';
-      case 'photo':
-        return '图片';
-      case 'voice':
-        return '语音';
+        fileName = msg.document?.file_name;
+        break;
       case 'animation':
-        return msg.animation?.file_name || msg.document?.file_name || '动画';
-      default:
-        return '文件';
+        fileName = msg.animation?.file_name || msg.document?.file_name;
+        break;
     }
+
+    if (fileName) return fileName;
+
+    // 如果没有文件名，尝试从说明文字或文本中提取关键词
+    const text = msg.caption || msg.text || '';
+    if (text) {
+      // 提取前 30 个字符并清理非法字符
+      const cleanText = text.replace(/[\n\r\s]+/g, ' ').trim();
+      if (cleanText) {
+        const truncated = cleanText.substring(0, 30);
+        const extension = this.getDefaultExtension(mediaType);
+        return `${truncated}${extension}`;
+      }
+    }
+
+    // 最后的保底名称
+    const defaultNames = {
+      'video': '视频',
+      'audio': '音频',
+      'document': '文档',
+      'photo': '图片',
+      'voice': '语音',
+      'animation': '动画'
+    };
+    
+    return defaultNames[mediaType] || '文件';
+  }
+
+  /**
+   * 根据媒体类型获取默认扩展名
+   */
+  getDefaultExtension(mediaType) {
+    const extensions = {
+      'video': '.mp4',
+      'audio': '.mp3',
+      'photo': '.jpg',
+      'voice': '.ogg',
+      'document': '',
+      'animation': '.mp4'
+    };
+    return extensions[mediaType] || '';
   }
 
   /**

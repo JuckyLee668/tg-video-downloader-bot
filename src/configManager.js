@@ -72,6 +72,26 @@ export class ConfigManager {
         this.config.remote_api.tg_base_dir || '/media/TGbot'
       );
       
+      // 加载 user_api 配置（用于频道搜索）
+      if (!this.config.user_api) {
+        this.config.user_api = {};
+      }
+      
+      this.config.user_api.api_id = this.getEnvValue(
+        'USER_API_ID',
+        this.config.user_api.api_id
+      );
+      
+      this.config.user_api.api_hash = this.getEnvValue(
+        'USER_API_HASH',
+        this.config.user_api.api_hash
+      );
+      
+      this.config.user_api.proxy = this.getEnvValue(
+        'USER_API_PROXY',
+        this.config.user_api.proxy
+      );
+      
       return this.config;
     } catch (error) {
       throw new Error(`加载配置文件失败: ${error.message}`);

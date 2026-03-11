@@ -11,9 +11,10 @@ const __dirname = dirname(__filename);
  * 用于记录已下载的文件，避免重复下载
  */
 export class DownloadHistory {
-  constructor(config, logger) {
+  constructor(config, logger, databaseManager) {
     this.config = config;
     this.logger = logger;
+    this.databaseManager = databaseManager;
     this.historyFile = join(process.cwd(), 'download_history.json');
     this.history = this.loadHistory();
   }

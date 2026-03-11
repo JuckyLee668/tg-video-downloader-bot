@@ -1,75 +1,31 @@
-import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
 /**
  * 转发文件队列管理器
- * 用于记录转发过来的待下载文件
+ * 使用 SQLite 数据库替代 JSON 文件持久化
  */
 export class ForwardedQueue {
-  constructor(config, logger) {
+  constructor(config, logger, databaseManager) {
     this.config = config;
     this.logger = logger;
-    this.queueFile = join(process.cwd(), 'forwarded_queue.json');
-    this.queue = this.loadQueue();
-  }
-
-  /**
-   * 加载待下载队列
-   */
-  loadQueue() {
-    try {
-      if (existsSync(this.queueFile)) {
-        const content = readFileSync(this.queueFile, 'utf-8');
-        const queue = JSON.parse(content);
-        this.logger.info(`加载转发待下载队列: ${Object.keys(queue).length} 条记录`);
-        return queue;
-      }
-    } catch (error) {
-      this.logger.warn('加载转发待下载队列失败，将创建新队列:', error.message);
-    }
-    return {};
-  }
-
-  /**
-   * 保存待下载队列
-   */
-  saveQueue() {
-    try {
-      writeFileSync(this.queueFile, JSON.stringify(this.queue, null, 2), 'utf-8');
-    } catch (error) {
-      this.logger.error('保存转发待下载队列失败:', error.message);
-    }
+    this.db = databaseManager;
   }
 
   /**
    * 添加转发消息到待下载队列
    */
   addToQueue(chatId, messageId, fileName, mediaType, fileId, forwardInfo = null) {
-    const key = this.generateQueueKey(chatId, messageId);
+    try {
+      // 检查是否已在队列中
+      const existing = this.getFromQueue(chatId, messageId);
+      if (existing) {
+        this.logger.info(`转发文件已在队列中，更新信息: ${fileName}`);
+        return;
+      }
 
-    // 如果已经有这个文件，只是更新信息
-    if (this.queue[key]) {
-      this.logger.info(`转发文件已在队列中，更新信息: ${fileName}`);
+      this.db.addForwardedTask(chatId, messageId, fileName, mediaType, fileId, forwardInfo);
+      this.logger.info(`转发文件已添加到待下载队列: ${fileName} (ID: ${messageId})`);
+    } catch (error) {
+      this.logger.error('添加转发任务失败:', error);
     }
-
-    this.queue[key] = {
-      chatId,
-      messageId,
-      fileName,
-      mediaType,
-      fileId,
-      forwardInfo: forwardInfo || {},
-      addedAt: new Date().toISOString(),
-      timestamp: Date.now(),
-      status: 'pending' // pending, downloading, completed
-    };
-
-    this.saveQueue();
-    this.logger.info(`转发文件已添加到待下载队列: ${fileName} (ID: ${messageId})`);
   }
 
   /**
@@ -83,37 +39,43 @@ export class ForwardedQueue {
    * 从队列中移除已完成的下载
    */
   removeFromQueue(chatId, messageId) {
-    const key = this.generateQueueKey(chatId, messageId);
-    if (this.queue[key]) {
-      delete this.queue[key];
-      this.saveQueue();
+    try {
+      this.db.removeForwardedTask(chatId, messageId);
       this.logger.info(`转发文件已从待下载队列移除: ${chatId}_${messageId}`);
       return true;
+    } catch (error) {
+      this.logger.error('移除转发任务失败:', error);
+      return false;
     }
-    return false;
   }
 
   /**
    * 检查文件是否在待下载队列中
    */
   isInQueue(chatId, messageId) {
-    const key = this.generateQueueKey(chatId, messageId);
-    return !!this.queue[key];
+    const task = this.getFromQueue(chatId, messageId);
+    return !!task;
+  }
+
+  /**
+   * 从队列获取任务
+   */
+  getFromQueue(chatId, messageId) {
+    return this.db.getForwardedTask(chatId, messageId);
   }
 
   /**
    * 获取队列状态
    */
   getQueueStatus() {
-    const pending = Object.values(this.queue).filter(item => item.status === 'pending').length;
-    const downloading = Object.values(this.queue).filter(item => item.status === 'downloading').length;
-    const total = Object.keys(this.queue).length;
+    const stats = this.db.getForwardedQueueStats();
+    const items = this.db.getPendingForwardedTasks();
 
     return {
-      total,
-      pending,
-      downloading,
-      items: Object.values(this.queue)
+      total: stats.total,
+      pending: stats.pending,
+      downloading: stats.downloading,
+      items: items
     };
   }
 
@@ -121,15 +83,10 @@ export class ForwardedQueue {
    * 更新队列项状态
    */
   updateStatus(chatId, messageId, status) {
-    const key = this.generateQueueKey(chatId, messageId);
-    if (this.queue[key]) {
-      this.queue[key].status = status;
-      if (status === 'downloading') {
-        this.queue[key].startedAt = new Date().toISOString();
-      } else if (status === 'completed') {
-        this.queue[key].completedAt = new Date().toISOString();
-      }
-      this.saveQueue();
+    try {
+      this.db.updateForwardedStatus(chatId, messageId, status);
+    } catch (error) {
+      this.logger.error('更新转发任务状态失败:', error);
     }
   }
 
@@ -137,6 +94,6 @@ export class ForwardedQueue {
    * 获取所有待下载项目
    */
   getAllPending() {
-    return Object.values(this.queue).filter(item => item.status === 'pending');
+    return this.db.getPendingForwardedTasks();
   }
 }

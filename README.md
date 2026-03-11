@@ -16,6 +16,7 @@
 - ✅ **下载历史记录**：自动记录已下载文件，避免重复下载
 - ✅ **消息限流**：自动控制 Telegram 消息发送频率，避免 429 错误
 - ✅ **自建服务器支持**：针对自建 Bot Server 的轮询机制，等待文件下载完成
+- ✅ **频道历史搜索与下载**：可配置普通用户客户端 (`user_api`) 后可通过 Bot 命令检索频道历史消息并下载媒体，如 `/channels` `/channel_search` `/download_channel`
 - ✅ **并发控制**：可配置最大并发下载任务数和 API 请求数
 - ✅ **私聊支持**：用户可直接发送媒体文件给 Bot 自动下载
 - ✅ **转发队列管理**：智能处理转发消息，避免无限重启循环
@@ -140,6 +141,74 @@ remote_api:
 > **注意**：`.env` 文件中的配置会覆盖 `config.yaml` 中的配置。建议将敏感信息放在 `.env` 文件中，避免提交到版本控制系统。
 
 ### 5. 启动服务
+
+#### 快捷启动脚本（推荐）
+
+项目提供了跨平台的启动脚本，可以自动处理安装、配置检查和启动：
+
+**Linux/macOS:**
+```bash
+# 确保脚本可执行
+chmod +x start.sh
+# 运行启动脚本
+./start.sh
+```
+
+**Windows:**
+```powershell
+# 在 PowerShell 中运行
+.\start.ps1
+```
+
+启动脚本功能：
+- ✅ 检查 Node.js 和 npm 是否正确安装
+- ✅ 自动安装项目依赖
+- ✅ 验证配置文件完整性
+- ✅ 检查必要的环境变量
+- ✅ 启动应用程序
+- ✅ 提供详细的状态反馈
+
+**脚本参数：**
+- Linux:
+  - `--skip-install`: 跳过依赖安装
+  - `--skip-config`: 跳过配置检查
+  - `--show-logs`: 显示实时日志（前台运行）
+  - `--help`: 显示帮助信息
+- Windows:
+  - `-SkipInstall`: 跳过依赖安装
+  - `-SkipConfigCheck`: 跳过配置检查
+  - `-ShowLogs`: 显示实时日志（前台运行）
+  - `-Help`: 显示帮助信息
+
+#### 查看日志
+
+启动脚本默认在后台运行应用程序。如需查看实时日志：
+
+**显示实时日志启动：**
+```bash
+# Linux
+./start.sh --show-logs
+
+# Windows PowerShell
+.\start.ps1 -ShowLogs
+```
+
+**查看日志文件：**
+```bash
+# Linux/macOS
+tail -f combined.log
+
+# Windows PowerShell
+Get-Content combined.log -Tail 10 -Wait
+```
+
+日志文件说明：
+- `combined.log`: 所有日志（包括错误）
+- `error.log`: 仅错误日志
+
+#### 手动启动
+
+如果需要手动控制启动过程：
 
 ```bash
 npm start

@@ -10,11 +10,12 @@ const __dirname = dirname(__filename);
  * 更好地管理未完成和中断的下载
  */
 export class UnfinishedDownloadManager {
-  constructor(config, logger, downloadHistory, forwardedQueue) {
+  constructor(config, logger, downloadHistory, forwardedQueue, databaseManager) {
     this.config = config;
     this.logger = logger;
     this.downloadHistory = downloadHistory;
     this.forwardedQueue = forwardedQueue;
+    this.databaseManager = databaseManager;
     this.restoreQueueFile = join(process.cwd(), 'unfinished_downloads.json');
     this.unfinishedTasks = this.loadRestoreQueue();
   }
@@ -55,7 +56,8 @@ export class UnfinishedDownloadManager {
       historyIncomplete: [],
       fileIncomplete: [],
       forwardedPending: [],
-      orphanedFiles: []
+      orphanedFiles: [],
+      databaseQueue: []
     };
 
     // 1. 检查历史记录中的未完成下载
@@ -66,13 +68,27 @@ export class UnfinishedDownloadManager {
       unfinished.forwardedPending = this.forwardedQueue.getAllPending();
     }
 
-    // 3. 检查实际文件系统中的不完整文件
+    // 3. 检查数据库下载队列
+    if (this.databaseManager) {
+      try {
+        const dbStats = this.databaseManager.getQueueStats();
+        if (dbStats && (dbStats.pending > 0 || dbStats.failed > 0)) {
+          // 获取所有待处理和可重试的任务
+          const pendingTasks = this.databaseManager.getPendingTasks(1000);
+          unfinished.databaseQueue = pendingTasks;
+        }
+      } catch (error) {
+        this.logger.error('扫描数据库队列失败:', error.message);
+      }
+    }
+
+    // 4. 检查实际文件系统中的不完整文件
     unfinished.fileIncomplete = this.scanIncompleteFiles();
 
-    // 4. 检查孤立文件（历史上有记录但可能有问题的）
+    // 5. 检查孤立文件（历史上有记录但可能有问题的）
     unfinished.orphanedFiles = this.findOrphanedFiles();
 
-    this.logger.info(`扫描完成: 历史未完成=${unfinished.historyIncomplete.length}, 文件不完整=${unfinished.fileIncomplete.length}, 转发待处理=${unfinished.forwardedPending.length}, 孤立文件=${unfinished.orphanedFiles.length}`);
+    this.logger.info(`扫描完成: 历史未完成=${unfinished.historyIncomplete.length}, 数据库队列=${unfinished.databaseQueue.length}, 文件不完整=${unfinished.fileIncomplete.length}, 转发待处理=${unfinished.forwardedPending.length}, 孤立文件=${unfinished.orphanedFiles.length}`);
 
     return unfinished;
   }

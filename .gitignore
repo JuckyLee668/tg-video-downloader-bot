@@ -9,3 +9,4 @@ config.local.yaml
 dist/
 download_history.json
 /.claude
+session.txt

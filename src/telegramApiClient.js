@@ -13,6 +13,7 @@ export class TelegramApiClient {
     this.botApiHost = config.remote_api?.bot_api_host || 'http://127.0.0.1:8081';
     this.publicFileBaseUrl = config.remote_api?.public_file_base_url || '';
     this.tgBaseDir = config.remote_api?.tg_base_dir || '/media/TGbot';
+    this.isConnected = false;
     
     if (!this.botToken || this.botToken === 'your_bot_token') {
       throw new Error('Bot Token 未配置');
@@ -93,28 +94,11 @@ export class TelegramApiClient {
 
   /**
    * 下载媒体文件
-   * 使用公网文件 URL 下载
+   * @deprecated 请优先使用 downloadMediaByFileId 或 downloadMediaByMessageId
    */
   async downloadMedia(chatId, messageId, savePath, progressCallback) {
-    try {
-      // 首先获取文件信息
-      const fileInfo = await this.getFileInfo(chatId, messageId);
-      
-      if (!fileInfo || !fileInfo.file_path) {
-        throw new Error('无法获取文件路径');
-      }
-
-      // 构造公网可访问的 URL
-      const publicUrl = this.buildPublicFileUrl(fileInfo.file_path);
-      
-      this.logger.info(`开始下载文件: ${publicUrl}`);
-
-      // 使用 https 下载文件
-      return await this.downloadFileFromUrl(publicUrl, savePath, progressCallback);
-    } catch (error) {
-      this.logger.error(`下载媒体失败 (${chatId}/${messageId}):`, error.message);
-      throw error;
-    }
+    this.logger.warn('使用已弃用的 downloadMedia 方法，建议改用 downloadMediaByMessageId');
+    return this.downloadMediaByMessageId(chatId, messageId, savePath, progressCallback);
   }
 
   /**
@@ -122,10 +106,9 @@ export class TelegramApiClient {
    */
   async getFileInfo(chatId, messageId) {
     try {
-      // 通过 Bot API 获取消息
-      // 注意：这需要消息在当前会话中可用
-      // 如果消息不在当前会话，需要通过其他方式获取 file_id
-      throw new Error('需要通过 file_id 获取文件信息，请使用 getFileByFileId 方法');
+      // Bot API 不支持直接通过消息 ID 获取文件信息
+      // 需要先通过 getMessage（如果支持）或直接使用 file_id
+      throw new Error('Bot API 不支持直接通过消息 ID 获取文件信息，请提供 file_id 并使用 getFileByFileId');
     } catch (error) {
       this.logger.error(`获取文件信息失败:`, error.message);
       throw error;
@@ -729,6 +712,7 @@ export class TelegramApiClient {
     try {
       const me = await this.bot.getMe();
       this.logger.info(`Bot 连接成功: @${me.username} (${me.first_name})`);
+      this.isConnected = true;
       return {
         ok: true,
         bot: {
@@ -739,6 +723,7 @@ export class TelegramApiClient {
       };
     } catch (error) {
       this.logger.error('检查 Bot API 连接失败:', error.message);
+      this.isConnected = false;
       throw error;
     }
   }

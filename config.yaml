@@ -65,10 +65,9 @@ file_formats:
   audio:
     - all
   document:
-    - pdf
-    - epub
+    - all  # 临时改为允许所有文档格式
   video:
-    - mp4
+    - all  # 临时改为允许所有视频格式
 
 # 保存路径
 save_path: ./downloads
@@ -114,6 +113,19 @@ language: EN
 # 允许使用 Bot 的用户 ID
 allowed_user_ids:
   - 'me'
+
+# 普通 Telegram 客户端配置（可选）
+# 如果希望 Bot 可以访问频道历史消息并下载不可转发的媒体，
+# 请到 https://my.telegram.org 申请 api_id 和 api_hash 并设置下列项。
+# 登录后会在工作目录生成 session.txt 文件。
+user_api:
+  api_id: YOUR_API_ID          # 或者通过环境变量 USER_API_ID
+  api_hash: YOUR_API_HASH      # 或者通过环境变量 USER_API_HASH
+  # phone_number: '+123456789'  # 可选，用于自动登录，如果不希望交互式登录
+  # proxy:                    # 与 utils.parseProxy 使用的格式相同
+  #   scheme: socks5
+  #   hostname: 127.0.0.1
+  #   port: 1080
 
 # 日期格式
 date_format: '%Y_%m'
