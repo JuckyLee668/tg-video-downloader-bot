@@ -1,11 +1,29 @@
-node_modules/
-downloads/
-*.log
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+ENV/
 .env
-config.local.yaml
+
+# Telegram Sessions
 *.session
 *.session-journal
-.DS_Store
-dist/
-download_history.json
-/.claude
+session.txt
+
+# Databases
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# Downloads & Media
+downloads/
+public/avatars/user_*.jpg
+
+# Logs
+*.log
+logs/
+
+# IDEs
+.vscode/
+.idea/
