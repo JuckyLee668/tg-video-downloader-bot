@@ -161,10 +161,13 @@ class DatabaseManager:
     async def get_pending_tasks(self, limit: int = 100):
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            # 确保获取 pending 状态或者可以重试的任务
             cursor = await db.execute("""
                 SELECT * FROM download_queue 
-                WHERE status = 'pending' OR (status = 'failed' AND retry_count < max_retries)
-                ORDER BY priority DESC, created_at ASC LIMIT ?
+                WHERE status = 'pending' 
+                   OR (status = 'failed' AND retry_count < max_retries)
+                ORDER BY priority DESC, created_at ASC 
+                LIMIT ?
             """, (limit,))
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
