@@ -557,6 +557,22 @@ def setup_handlers():
             await event.respond("❌ 没有找到匹配的消息。")
             return
 
+        # --- 增加：2GB 会员限制预检 ---
+        large_files = [m for m in messages_to_forward if m.file and m.file.size > 2000 * 1024 * 1024]
+        if large_files:
+            me = await tg_clients.user_client.get_me()
+            if not getattr(me, 'premium', False):
+                await event.respond(
+                    f"⚠️ **无法转发大文件**\n\n"
+                    f"检测到 {len(large_files)} 个文件超过了 2GB（非会员上限）。\n"
+                    f"由于当前登录账号不是 **Telegram Premium**，这些文件在下载后将无法上传转发。\n\n"
+                    f"💡 建议：\n"
+                    f"1. 开通会员后再操作。\n"
+                    f"2. 手动下载并分割文件后再上传。\n"
+                    f"3. 仅选择小于 2GB 的文件进行转发。"
+                )
+                return # 拦截操作，不加入队列
+
         # 将待转发消息落入下载队列，下载完成后转发
         added = 0
         for msg in messages_to_forward:

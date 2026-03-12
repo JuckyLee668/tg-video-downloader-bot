@@ -161,20 +161,25 @@ class DownloadManager:
                     forward_target = task_data.get('forward_target')
                     delete_after = bool(task_data.get('delete_after_forward', False))
                     caption = task_data.get('caption', '') or ""
-                    if forward_target:
-                        try:
-                            peer = await tg_clients.user_client.get_entity(str(forward_target))
                             try:
                                 # 对于大文件且走代理的环境，send_file 自动分片偶尔失败
                                 # 我们先手动上传文件，获得 InputFile
                                 file_size = os.path.getsize(save_path)
                                 force_doc = task.get('media_type') == 'document'
                                 
+                                # --- 增加：2GB 限制检查 ---
+                                if file_size > 2000 * 1024 * 1024:
+                                    me = await tg_clients.user_client.get_me()
+                                    if not getattr(me, 'premium', False):
+                                        raise Exception(f"文件大小 ({file_size / 1024 / 1024:.2f} MB) 超过了非会员 2GB 的限制，请使用会员账号或手动分割文件。")
+                                
                                 logger.info(f"正在上传转发文件: {task['file_name']} ({file_size / 1024 / 1024:.2f} MB)")
                                 
+                                # 强制使用 512KB 分片以减少分片数量，避免超过 4000 个分片的限制
                                 uploaded_file = await tg_clients.user_client.upload_file(
                                     save_path,
-                                    progress_callback=self.create_progress_callback(task_id) # 复用进度回调显示上传进度
+                                    part_size_kb=512 if file_size > 100 * 1024 * 1024 else None,
+                                    progress_callback=self.create_progress_callback(task_id)
                                 )
                                 
                                 await tg_clients.user_client.send_file(
