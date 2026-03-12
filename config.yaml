@@ -25,13 +25,7 @@ media_types:
 - video
 - voice
 - animation
-proxy:
-  hostname: 127.0.0.1
-  password: null
-  port: 10808
-  rdns: true
-  scheme: socks5
-  username: null
+proxy: null
 save_path: ./downloads
 user_api:
   api_hash: db62a098851588b5fd97bbee6ddd1536
