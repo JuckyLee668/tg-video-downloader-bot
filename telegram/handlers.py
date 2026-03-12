@@ -1,6 +1,7 @@
 from telethon import events, Button
 from loguru import logger
 from datetime import datetime
+import os
 import re
 import json
 import aiosqlite
@@ -238,28 +239,20 @@ def setup_handlers():
             await event.respond(f"❌ 搜索出错: {str(e)}")
 
     # Channel Search Time
-    @bot.on(events.NewMessage(pattern=r'/(channel_search_time|cst) (\d{4}-\d{2}-\d{2}) (\d{4}-\d{2}-\d{2})'))
+    @bot.on(events.NewMessage(pattern=r'/(channel_search_time|cst)(?: (\d{4}-\d{2}-\d{2}))?(?: (\d{4}-\d{2}-\d{2}))?'))
     async def search_time_handler(event):
-        if not search.searcher:
-            from telegram.search import init_searcher
-            init_searcher(tg_clients.user_client)
-            
-        if not await search.searcher.ensure_connected():
-            await event.respond("❌ 请先使用 /channel_connect 连接频道。")
-            return
-            
-        try:
-            start_date = datetime.strptime(event.pattern_match.group(2), "%Y-%m-%d")
-            # Set end_date to the end of that day (23:59:59)
-            end_date = datetime.strptime(event.pattern_match.group(3), "%Y-%m-%d").replace(hour=23, minute=59, second=59)
-            
-            await event.respond(f"🔍 正在搜索时间段: `{start_date.date()}` 至 `{end_date.date()}`...")
-            messages = await search.searcher.search_by_time(start_date, end_date)
-            last_search_results[event.chat_id] = messages
-            
-            await event.respond(f"✅ 找到 {len(messages)} 条媒体消息。发送 `/batch_download` (`/bd`) 即可全部下载，或 `/batch_forward` (`/bf`) `目标ID` 转发。")
-        except Exception as e:
-            await event.respond(f"❌ 搜索出错: {str(e)}")
+        start = event.pattern_match.group(2)
+        end = event.pattern_match.group(3)
+        if not start:
+            await event.respond("⌛ 请输入开始日期 (YYYY-MM-DD)：")
+            user_states[event.chat_id] = {'command': 'cst', 'step': 'start'}
+            raise events.StopPropagation
+        if start and not end:
+            await event.respond("⌛ 请输入结束日期 (YYYY-MM-DD)：")
+            user_states[event.chat_id] = {'command': 'cst', 'step': 'end', 'start': start}
+            raise events.StopPropagation
+        await do_cst(event, start, end)
+        raise events.StopPropagation
 
     # Channel Search Recent
     @bot.on(events.NewMessage(pattern=r'/(channel_search_recent|csr)(?: (\d+))?'))
@@ -337,109 +330,41 @@ def setup_handlers():
         await event.respond(f"✅ 成功添加 {count} 个下载任务。")
 
     # Batch Download Formats
-    @bot.on(events.NewMessage(pattern=r'/(batch_download_formats|bdf) ([a-zA-Z0-9, ]+)(?: (.+))?'))
+    @bot.on(events.NewMessage(pattern=r'/(batch_download_formats|bdf)(?: ([a-zA-Z0-9, ]+))?(?: (.+))?'))
     async def batch_download_formats_handler(event):
         formats_str = event.pattern_match.group(2)
         indices_str = event.pattern_match.group(3)
-        
-        last_results = last_search_results.get(event.chat_id, [])
-        if not last_results:
-            await event.respond("❌ 请先进行搜索。")
-            return
-
-        formats = [f.strip() for f in formats_str.replace('，', ',').split(',')]
-        
-        messages_to_download = []
-        if not indices_str:
-            messages_to_download = last_results
-        else:
-            try:
-                indices = set()
-                parts = indices_str.replace('，', ',').split(',')
-                for part in parts:
-                    part = part.strip()
-                    if '-' in part:
-                        start_str, end_str = part.split('-')
-                        indices.update(range(int(start_str), int(end_str) + 1))
-                    elif part.isdigit():
-                        indices.add(int(part))
-                
-                for idx in sorted(list(indices)):
-                    if 1 <= idx <= len(last_results):
-                        messages_to_download.append(last_results[idx-1])
-            except Exception as e:
-                await event.respond(f"❌ 解析序号出错: {str(e)}")
-                return
-
-        if not messages_to_download:
-            await event.respond("❌ 没有找到匹配的消息。")
-            return
-            
-        await event.respond(f"📥 正在按格式 `{formats}` 过滤并添加任务...")
-        count = await search.searcher.batch_add_tasks(messages_to_download, str(event.chat_id), formats=formats)
-        await event.respond(f"✅ 成功添加 {count} 个匹配格式的下载任务。")
+        if not formats_str:
+            await event.respond("🧩 请输入格式列表（如: mp4, mp3, mkv）：")
+            user_states[event.chat_id] = {'command': 'bdf'}
+            raise events.StopPropagation
+        await do_bdf(event, formats_str, indices_str)
+        raise events.StopPropagation
 
     # Batch Forward
-    @bot.on(events.NewMessage(pattern=r'/(batch_forward|bf) ([^ ]+)(?: (.+))?'))
+    @bot.on(events.NewMessage(pattern=r'/(batch_forward|bf)(?: ([^ ]+))?(?: (.+))?'))
     async def batch_forward_handler(event):
         target = event.pattern_match.group(2)
         indices_str = event.pattern_match.group(3)
+        if not target:
+            await event.respond("📤 请输入目标聊天（ID 或 @username），可带序号范围。例如：`@channel 1-5,8`")
+            user_states[event.chat_id] = {'command': 'bf', 'step': 'target'}
+            raise events.StopPropagation
+
         last_results = last_search_results.get(event.chat_id, [])
-        
         if not last_results:
             await event.respond("❌ 请先进行搜索。")
             return
-            
-        # Parse indices
-        messages_to_forward = []
-        if not indices_str:
-            messages_to_forward = last_results
-        else:
-            try:
-                indices = set()
-                parts = indices_str.replace('，', ',').split(',')
-                for part in parts:
-                    part = part.strip()
-                    if '-' in part:
-                        s, e = part.split('-')
-                        indices.update(range(int(s), int(e) + 1))
-                    elif part.isdigit():
-                        indices.add(int(part))
-                
-                for idx in sorted(list(indices)):
-                    if 1 <= idx <= len(last_results):
-                        messages_to_forward.append(last_results[idx-1])
-            except Exception as e:
-                await event.respond(f"❌ 解析序号出错: {str(e)}")
-                return
-        
-        if not messages_to_forward:
-            await event.respond("❌ 没有找到匹配的消息。")
-            return
-            
-        await event.respond(f"📤 正在转发 {len(messages_to_forward)} 条消息到 `{target}`...")
-        
-        # Group by source chat
-        by_chat = {}
-        for msg in messages_to_forward:
-            cid = str(msg.chat_id)
-            if cid not in by_chat: by_chat[cid] = []
-            by_chat[cid].append(msg.id)
-            
-        try:
-            # Resolve target
-            to_peer = target
-            if target.replace('-', '').isdigit():
-                to_peer = int(target)
-            
-            total = 0
-            for from_chat_id, msg_ids in by_chat.items():
-                await search.searcher.forward_messages(int(from_chat_id), msg_ids, to_peer)
-                total += len(msg_ids)
-                
-            await event.respond(f"✅ 成功转发 {total} 条消息。")
-        except Exception as e:
-            await event.respond(f"❌ 转发失败: {str(e)}")
+
+        if not indices_str and len(last_results) > 20:
+            await event.respond(f"📤 最近搜索共 {len(last_results)} 条。请回复需要转发的序号范围，例如 `1-5,8`，或回复 `all` 表示全部。")
+            user_states[event.chat_id] = {'command': 'bf', 'step': 'indices', 'target': target}
+            raise events.StopPropagation
+
+        # 询问是否删除
+        user_states[event.chat_id] = {'command': 'bf', 'step': 'delete', 'target': target, 'indices': indices_str}
+        await event.respond("🗑️ 转发完成后是否删除本地文件？回复 yes/no（默认 yes）。")
+        raise events.StopPropagation
 
     # Channels List
     @bot.on(events.NewMessage(pattern='/channels'))
@@ -537,6 +462,135 @@ def setup_handlers():
         for item in results:
             response += f"✅ `{item['file_name']}`\n  时间: `{item['downloaded_at']}` | 大小: `{format_size(item['file_size'] or 0)}`\n\n"
         await event.respond(response)
+
+    async def do_cst(event, start_str, end_str):
+        if not search.searcher:
+            from telegram.search import init_searcher
+            init_searcher(tg_clients.user_client)
+        if not await search.searcher.ensure_connected():
+            await event.respond("❌ 请先使用 /cc 连接频道。")
+            return
+        try:
+            start_date = datetime.strptime(start_str, "%Y-%m-%d")
+            end_date = datetime.strptime(end_str, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+            await event.respond(f"🔍 正在搜索时间段: `{start_date.date()}` 至 `{end_date.date()}`...")
+            messages = await search.searcher.search_by_time(start_date, end_date)
+            last_search_results[event.chat_id] = messages
+            await event.respond(f"✅ 找到 {len(messages)} 条媒体消息。发送 `/batch_download` (`/bd`) 即可全部下载，或 `/batch_forward` (`/bf`) `目标ID` 转发。")
+        except Exception as e:
+            await event.respond(f"❌ 搜索出错: {str(e)}")
+
+    async def do_bdf(event, formats_str, indices_str=None):
+        last_results = last_search_results.get(event.chat_id, [])
+        if not last_results:
+            await event.respond("❌ 请先进行搜索。")
+            return
+        formats = [f.strip() for f in formats_str.replace('，', ',').split(',')]
+        messages_to_download = []
+        if not indices_str:
+            messages_to_download = last_results
+        else:
+            try:
+                indices = set()
+                parts = indices_str.replace('，', ',').split(',')
+                for part in parts:
+                    part = part.strip()
+                    if '-' in part:
+                        start_str, end_str = part.split('-')
+                        indices.update(range(int(start_str), int(end_str) + 1))
+                    elif part.isdigit():
+                        indices.add(int(part))
+                for idx in sorted(indices):
+                    if 1 <= idx <= len(last_results):
+                        messages_to_download.append(last_results[idx-1])
+            except Exception as e:
+                await event.respond(f"❌ 解析序号出错: {str(e)}")
+                return
+        if not messages_to_download:
+            await event.respond("❌ 没有找到匹配的消息。")
+            return
+        await event.respond(f"📥 正在按格式 `{formats}` 过滤并添加任务...")
+        count = await search.searcher.batch_add_tasks(messages_to_download, str(event.chat_id), formats=formats)
+        await event.respond(f"✅ 成功添加 {count} 个匹配格式的下载任务。")
+
+    async def do_bf(event, target, indices_str=None, delete_after=False):
+        if not tg_clients.user_client or not await tg_clients.user_client.is_user_authorized():
+            await event.respond("❌ 用户客户端未登录，无法转发。请先 /login。")
+            return
+        last_results = last_search_results.get(event.chat_id, [])
+        if not last_results:
+            await event.respond("❌ 请先进行搜索。")
+            return
+        # pick messages by index if provided
+        messages_to_forward = []
+        if not indices_str:
+            messages_to_forward = last_results
+        else:
+            try:
+                indices = set()
+                parts = indices_str.replace('，', ',').split(',')
+                for part in parts:
+                    part = part.strip()
+                    if '-' in part:
+                        s, e = part.split('-')
+                        indices.update(range(int(s), int(e) + 1))
+                    elif part.isdigit():
+                        indices.add(int(part))
+                for idx in sorted(indices):
+                    if 1 <= idx <= len(last_results):
+                        messages_to_forward.append(last_results[idx-1])
+            except Exception as e:
+                await event.respond(f"❌ 解析序号出错: {str(e)}")
+                return
+        if not messages_to_forward:
+            await event.respond("❌ 没有找到匹配的消息。")
+            return
+
+        # 将待转发消息落入下载队列，下载完成后转发
+        added = 0
+        for msg in messages_to_forward:
+            # 尽量带扩展名，避免转发时报“不是有效文件”
+            file_name = None
+            if msg.file and msg.file.name:
+                file_name = msg.file.name
+            elif msg.file and getattr(msg.file, 'ext', None):
+                file_name = f"media_{msg.id}{msg.file.ext}"
+            else:
+                mime = getattr(msg.file, 'mime_type', '') if msg.file else ''
+                ext = ''
+                if mime.startswith('video/'):
+                    ext = '.mp4'
+                elif mime.startswith('audio/'):
+                    ext = '.mp3'
+                elif mime == 'image/jpeg':
+                    ext = '.jpg'
+                elif mime == 'image/png':
+                    ext = '.png'
+                file_name = f"media_{msg.id}{ext}"
+            display_name = file_name
+            if delete_after:
+                display_name = f"[DEL]{file_name}"
+            task = {
+                'chat_id': msg.chat_id,
+                'message_id': msg.id,
+                'file_name': display_name,
+                'media_type': msg.media.__class__.__name__ if msg.media else 'unknown',
+                'file_size': msg.file.size if msg.file else 0,
+                'channel_id': msg.chat_id,
+                'channel_username': getattr(msg.chat, 'username', '') if msg.chat else '',
+                'channel_title': getattr(msg.chat, 'title', '') if msg.chat else '',
+                'task_data': {
+                    'original_file_name': file_name,
+                    'forward_target': str(target),
+                    'delete_after_forward': delete_after,
+                    'caption': msg.message or "",
+                    'access_hash': getattr(msg.chat, 'access_hash', None)
+                }
+            }
+            await download_manager.add_task(task)
+            added += 1
+
+        await event.respond(f"📥 已将 {added} 条消息加入下载队列，下载完成后会自动转发到 `{target}`，并将在转发后{'删除' if delete_after else '保留'}本地文件。")
 
     # Channel Connect
     @bot.on(events.NewMessage(pattern=r'/(channel_connect|cc)(?: (.+))?'))
@@ -638,6 +692,60 @@ def setup_handlers():
             await do_sh(event, event.text.strip())
             raise events.StopPropagation
 
+        elif cmd == 'cst':
+            if state.get('step') == 'start':
+                user_states[event.chat_id] = {'command': 'cst', 'step': 'end', 'start': event.text.strip()}
+                await event.respond("⌛ 请输入结束日期 (YYYY-MM-DD)：")
+                raise events.StopPropagation
+            elif state.get('step') == 'end':
+                start = state.get('start')
+                end = event.text.strip()
+                del user_states[event.chat_id]
+                await do_cst(event, start, end)
+                raise events.StopPropagation
+
+        elif cmd == 'bdf':
+            formats_str = event.text.strip()
+            del user_states[event.chat_id]
+            await do_bdf(event, formats_str, None)
+            raise events.StopPropagation
+
+        elif cmd == 'bf':
+            step = state.get('step')
+            if step == 'target':
+                # user replied with target (and maybe indices)
+                parts = event.text.strip().split(' ', 1)
+                target = parts[0]
+                indices = parts[1] if len(parts) > 1 else None
+                # 如果没有 indices 或结果很多，再问 indices
+                last_results = last_search_results.get(event.chat_id, [])
+                if not indices and last_results and len(last_results) > 20:
+                    await event.respond(f"📤 最近搜索共 {len(last_results)} 条。请回复需要转发的序号范围，例如 `1-5,8`，或回复 `all` 表示全部。")
+                    user_states[event.chat_id] = {'command': 'bf', 'step': 'indices', 'target': target}
+                else:
+                    user_states[event.chat_id] = {'command': 'bf', 'step': 'delete', 'target': target, 'indices': indices}
+                    await event.respond("🗑️ 转发完成后是否删除本地文件？回复 yes/no（默认 yes）。")
+                raise events.StopPropagation
+            elif step == 'indices':
+                target = state.get('target')
+                indices = event.text.strip()
+                if indices.lower() == 'all':
+                    indices = None
+                user_states[event.chat_id] = {'command': 'bf', 'step': 'delete', 'target': target, 'indices': indices}
+                await event.respond("🗑️ 转发完成后是否删除本地文件？回复 yes/no（默认 yes）。")
+                raise events.StopPropagation
+            elif step == 'delete':
+                target = state.get('target')
+                indices = state.get('indices')
+                answer = event.text.strip().lower()
+                delete_after = False if answer in ['no', 'n', '0', 'false'] else True
+                del user_states[event.chat_id]
+                await do_bf(event, target, indices, delete_after)
+                raise events.StopPropagation
+            else:
+                del user_states[event.chat_id]
+                return
+
     # Media Handler (Auto-download)
     @bot.on(events.NewMessage)
     async def media_handler(event):
@@ -675,7 +783,8 @@ def setup_handlers():
             'file_size': event.message.file.size or 0,
             'task_data': {
                 'caption': event.message.message,
-                'grouped_id': str(grouped_id) if grouped_id else None
+                'grouped_id': str(grouped_id) if grouped_id else None,
+                'access_hash': getattr(event.chat, 'access_hash', None)
             }
         }
         await download_manager.add_task(task)

@@ -11,7 +11,8 @@ from web.api_models import (
     ConnectRequest, JoinRequest, SearchKeywordRequest, 
     SearchTimeRequest, SearchRecentRequest, DownloadBatchRequest,
     LoginSendCodeRequest, LoginSignInRequest, TaskIdRequest,
-    ProxyConfigRequest, ConfigResponse, ForwardRequest, BatchDeleteRequest
+    ProxyConfigRequest, ConfigResponse, ForwardRequest, BatchDeleteRequest,
+    HistoryDeleteRequest
 )
 from core.config import config, ProxyConfig
 
@@ -61,6 +62,16 @@ async def clear_queue_route():
     # Reset in-memory queue
     download_manager.queue = asyncio.Queue()
     download_manager.active_tasks = set()
+    return {"status": "success"}
+
+@router.post("/history/delete")
+async def delete_history(req: HistoryDeleteRequest):
+    deleted = await db_manager.delete_history_items(req.ids)
+    return {"status": "success", "deleted": deleted}
+
+@router.post("/history/clear")
+async def clear_history():
+    await db_manager.clear_history()
     return {"status": "success"}
 
 @router.post("/queue/retry-failed")

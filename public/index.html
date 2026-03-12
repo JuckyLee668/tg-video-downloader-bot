@@ -215,8 +215,18 @@
 
         <div id="content-history" class="tab-content hidden space-y-8">
             <section class="bg-white p-6 rounded-lg shadow">
-                <h2 class="text-xl font-semibold mb-4 border-b pb-2">📜 Completed History</h2>
-                <div id="history-list" class="space-y-4">
+                <div class="flex items-center justify-between mb-4 border-b pb-2">
+                    <h2 class="text-xl font-semibold">📜 Completed History</h2>
+                    <div class="flex gap-2 text-sm">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" id="history-check-all" class="h-4 w-4" onchange="toggleAllHistory(this)">
+                            <span class="text-xs text-gray-600">Select All</span>
+                        </label>
+                        <button onclick="deleteSelectedHistory()" class="px-3 py-1 border rounded hover:bg-gray-100">Delete Selected</button>
+                        <button onclick="clearHistory()" class="px-3 py-1 border rounded text-red-600 hover:bg-red-50">Clear All</button>
+                    </div>
+                </div>
+                <div id="history-list" class="space-y-2">
                     <!-- Dynamic -->
                 </div>
             </section>
@@ -495,15 +505,38 @@
         async function loadHistory() {
             const data = await fetchApi('/history?size=50');
             const list = document.getElementById('history-list');
-            list.innerHTML = data.items.map(h => `
-                <div class="p-4 bg-gray-50 rounded border flex justify-between items-center">
-                    <div>
-                        <div class="font-bold text-gray-800">${h.file_name}</div>
-                        <div class="text-xs text-gray-500">${(h.file_size/1024/1024).toFixed(2)} MB | ${h.media_type} | ${new Date(h.downloaded_at || h.completed_at).toLocaleString()}</div>
+            list.innerHTML = data.items.map(h => {
+                const badge = h.file_name.startsWith('[DEL]') ? '<span class="ml-2 text-xs text-red-600 font-semibold">Will Delete</span>' : '';
+                return `
+                <div class="p-3 bg-gray-50 rounded border flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                        <input type="checkbox" class="history-check h-4 w-4" data-id="${h.id}">
+                        <div>
+                            <div class="font-bold text-gray-800">${h.file_name}${badge}</div>
+                            <div class="text-xs text-gray-500">${(h.file_size/1024/1024).toFixed(2)} MB | ${h.media_type} | ${new Date(h.downloaded_at || h.completed_at).toLocaleString()}</div>
+                        </div>
                     </div>
                     <div class="text-green-600 font-bold text-xs uppercase">Completed</div>
-                </div>
-            `).join('') || '<p class="text-gray-500 italic text-center">No history found</p>';
+                </div>`;
+            }).join('') || '<p class="text-gray-500 italic text-center">No history found</p>';
+        }
+
+        async function deleteSelectedHistory() {
+            const ids = Array.from(document.querySelectorAll('.history-check:checked')).map(el => parseInt(el.dataset.id));
+            if (!ids.length) return;
+            if (!confirm(`Delete ${ids.length} selected history items?`)) return;
+            await fetchApi('/history/delete', { method: 'POST', body: JSON.stringify({ ids }) });
+            loadHistory();
+        }
+
+        async function clearHistory() {
+            if (!confirm('Clear ALL history records?')) return;
+            await fetchApi('/history/clear', { method: 'POST' });
+            loadHistory();
+        }
+
+        function toggleAllHistory(cb) {
+            document.querySelectorAll('.history-check').forEach(el => el.checked = cb.checked);
         }
 
         async function checkLoginStatus() {

@@ -363,6 +363,20 @@ class DatabaseManager:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
+    async def delete_history_items(self, ids: List[int]):
+        if not ids:
+            return 0
+        async with aiosqlite.connect(self.db_path) as db:
+            qmarks = ",".join("?" for _ in ids)
+            await db.execute(f"DELETE FROM download_history WHERE id IN ({qmarks})", ids)
+            await db.commit()
+        return len(ids)
+
+    async def clear_history(self):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM download_history")
+            await db.commit()
+
     async def connect_channel(self, channel_id: str, username: str = None, title: str = None):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""

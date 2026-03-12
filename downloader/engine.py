@@ -9,9 +9,10 @@ from core.config import config
 class DownloadEngine:
     def __init__(self):
         # Telegram API GetFileRequest 限制单块最大 512KB (524288 bytes)
-        self.chunk_size = 512 * 1024 
-        # 并行分片数: 建议 4-8
-        self.parallel_chunks = 8
+        # 提高单块尺寸与并发，减少请求次数，加快大文件下载
+        self.chunk_size = 1024 * 1024  # 1MB
+        # 并行分片数: 建议 8-12，视网络/CPU 而定
+        self.parallel_chunks = 12
 
     async def download_via_telethon(self, client: TelegramClient, message, save_path: str, progress_callback: Optional[Callable] = None):
         """
@@ -29,13 +30,8 @@ class DownloadEngine:
         if file_size < 5 * 1024 * 1024:
             return await client.download_media(message, file=save_path, progress_callback=progress_callback)
 
-        logger.info(f"开启高速并行下载模式: {os.path.basename(save_path)} ({file_size / 1024 / 1024:.2f} MB)")
-        
-        try:
-            return await self._parallel_download(client, message, save_path, progress_callback)
-        except Exception as e:
-            logger.error(f"并行下载失败，尝试回退到标准下载: {e}")
-            return await client.download_media(message, file=save_path, progress_callback=progress_callback)
+        # 直接使用标准下载，避免跨 DC 并行导致的迁移/断线问题
+        return await client.download_media(message, file=save_path, progress_callback=progress_callback)
 
     async def _parallel_download(self, client: TelegramClient, message, save_path: str, progress_callback: Optional[Callable] = None):
         file_size = message.file.size

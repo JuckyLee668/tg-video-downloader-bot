@@ -293,7 +293,8 @@ class ChannelSearcher:
                 'channel_title': getattr(msg.chat, 'title', ''),
                 'task_data': {
                     'caption': msg.message,
-                    'date': msg.date.isoformat()
+                    'date': msg.date.isoformat(),
+                    'access_hash': getattr(msg.chat, 'access_hash', None)
                 }
             }
             await download_manager.add_task(task)

@@ -56,6 +56,9 @@ class TaskIdRequest(BaseModel):
 class BatchDeleteRequest(BaseModel):
     task_ids: List[str]
 
+class HistoryDeleteRequest(BaseModel):
+    ids: List[int]
+
 class ForwardRequest(BaseModel):
     from_channel_id: str
     message_ids: List[int]

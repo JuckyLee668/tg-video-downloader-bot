@@ -1,10 +1,12 @@
 import asyncio
 import os
+import json
 from typing import Dict, Any, List
 from loguru import logger
 from core.config import config
 from core.database import db_manager
 from downloader.engine import download_engine
+from telethon.tl.types import InputPeerChannel
 
 class DownloadManager:
     def __init__(self):
@@ -53,6 +55,17 @@ class DownloadManager:
         while True:
             task = await self.queue.get()
             task_id = task['task_id']
+            # normalize task_data
+            task_data_raw = task.get('task_data') or "{}"
+            if isinstance(task_data_raw, str):
+                try:
+                    task_data = json.loads(task_data_raw)
+                except Exception:
+                    task_data = {}
+            elif isinstance(task_data_raw, dict):
+                task_data = task_data_raw
+            else:
+                task_data = {}
             
             # Double check if another worker is already on it
             if task_id in self.active_tasks:
@@ -78,8 +91,17 @@ class DownloadManager:
                         if not peer_id_str:
                             raise Exception("任务数据中缺失有效的 chat_id 或 channel_id")
                         
-                        peer_id = int(peer_id_str)
-                        entity = await tg_clients.user_client.get_input_entity(peer_id)
+                        access_hash = task_data.get('access_hash') or task.get('access_hash')
+                        entity = None
+                        if access_hash and str(peer_id_str).startswith('-100'):
+                            try:
+                                cid = int(str(peer_id_str).replace('-100', ''))
+                                entity = InputPeerChannel(cid, int(access_hash))
+                            except Exception as e:
+                                logger.warning(f"使用 access_hash 构造 InputPeerChannel 失败: {e}")
+                        if not entity:
+                            peer_id = int(peer_id_str)
+                            entity = await tg_clients.user_client.get_input_entity(peer_id)
                         message_id = int(task['message_id'])
                         
                         messages = await tg_clients.user_client.get_messages(entity, ids=[message_id])
@@ -123,6 +145,31 @@ class DownloadManager:
                     raise Exception("用户客户端尚未授权，请通过 Bot 发送 /login 登录")
 
                 if downloaded_success:
+                    # sanity check: 文件存在且非空
+                    if (not os.path.exists(save_path)) or os.path.getsize(save_path) == 0:
+                        raise Exception(f"下载完成但未找到文件: {save_path}")
+
+                    # forward if requested
+                    forward_target = task_data.get('forward_target')
+                    delete_after = bool(task_data.get('delete_after_forward', False))
+                    caption = task_data.get('caption', '') or ""
+                    if forward_target:
+                        try:
+                            if str(forward_target).replace('-', '').isdigit():
+                                peer = await tg_clients.user_client.get_entity(int(forward_target))
+                            else:
+                                peer = await tg_clients.user_client.get_entity(forward_target)
+                            await tg_clients.user_client.send_file(peer, save_path, caption=caption, force_document=task.get('media_type') == 'document')
+                            if delete_after and os.path.exists(save_path):
+                                try:
+                                    os.remove(save_path)
+                                except Exception as de:
+                                    logger.warning(f"删除转发后文件失败: {de}")
+                        except Exception as fe:
+                            logger.error(f"下载完成但转发失败: {fe}")
+                            await db_manager.update_task_status(task_id, 'failed', str(fe))
+                            raise fe
+
                     await db_manager.complete_download_task(task, {
                         'download_path': save_path,
                         'status': 'completed'
