@@ -72,9 +72,6 @@ class DownloadManager:
                 self.queue.task_done()
                 continue
                 
-            retry_count = task.get('retry_count', 0)
-            max_retries = task.get('max_retries', 3)
-            
             try:
                 self.active_tasks.add(task_id)
                 await db_manager.update_task_status(task_id, 'downloading')
@@ -155,10 +152,7 @@ class DownloadManager:
                     caption = task_data.get('caption', '') or ""
                     if forward_target:
                         try:
-                            if str(forward_target).replace('-', '').isdigit():
-                                peer = await tg_clients.user_client.get_entity(int(forward_target))
-                            else:
-                                peer = await tg_clients.user_client.get_entity(forward_target)
+                            peer = await tg_clients.user_client.get_entity(str(forward_target))
                             await tg_clients.user_client.send_file(peer, save_path, caption=caption, force_document=task.get('media_type') == 'document')
                             if delete_after and os.path.exists(save_path):
                                 try:
@@ -178,21 +172,20 @@ class DownloadManager:
                     raise Exception("下载失败，未能在指定引擎中完成下载")
 
             except Exception as e:
-                # If we returned early from FloodWait, e might not be an exception here
-                # But 'return' inside try-except-finally still executes finally.
-                if isinstance(e, Exception):
-                    logger.error(f"任务处理出错: {task_id}, 错误: {e}")
-                    await db_manager.update_task_status(task_id, 'failed', str(e))
-                    
-                    # 如果没达到最大重试次数，可以过一段时间再重试
-                    if retry_count < max_retries:
-                        logger.info(f"任务 {task_id} 将在 10 秒后重试 ({retry_count + 1}/{max_retries})")
-                        async def delayed_retry(tid):
-                            await asyncio.sleep(10)
-                            updated_task = await db_manager.get_task_by_id(tid)
-                            if updated_task:
-                                await self.queue.put(updated_task)
-                        asyncio.create_task(delayed_retry(task_id))
+                logger.error(f"任务处理出错: {task_id}, 错误: {e}")
+                await db_manager.update_task_status(task_id, 'failed', str(e))
+
+                # 通知触发者（如果记录了 requester_chat_id 且 bot_client 可用）
+                requester = task_data.get('requester_chat_id')
+                try:
+                    from telegram.client import tg_clients
+                    if requester and tg_clients.bot_client:
+                        await tg_clients.bot_client.send_message(requester, f"❌ 任务 {task.get('file_name')} 失败: {e}")
+                except Exception as ne:
+                    logger.warning(f"通知用户失败: {ne}")
+
+                # 删除任务，避免无限重试
+                await db_manager.delete_download_task(task_id)
             
             finally:
                 if task_id in self.active_tasks:

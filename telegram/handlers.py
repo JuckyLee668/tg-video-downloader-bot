@@ -595,7 +595,8 @@ def setup_handlers():
                     'forward_target': str(target),
                     'delete_after_forward': delete_after,
                     'caption': msg.message or "",
-                    'access_hash': getattr(msg.chat, 'access_hash', None)
+                    'access_hash': getattr(msg.chat, 'access_hash', None),
+                    'requester_chat_id': event.chat_id
                 }
             }
             await download_manager.add_task(task)
