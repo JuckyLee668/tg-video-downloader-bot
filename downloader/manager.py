@@ -154,6 +154,22 @@ class DownloadManager:
                         try:
                             peer = await tg_clients.user_client.get_entity(str(forward_target))
                             await tg_clients.user_client.send_file(peer, save_path, caption=caption, force_document=task.get('media_type') == 'document')
+                            # 清理文件
+                            if delete_after and os.path.exists(save_path):
+                                try:
+                                    os.remove(save_path)
+                                except Exception as de:
+                                    logger.warning(f"删除转发后文件失败: {de}")
+                        except Exception as fe:
+                            logger.error(f"下载完成但转发失败: {fe}")
+                            await db_manager.update_task_status(task_id, 'failed', str(fe))
+                            # 删除文件避免堆积
+                            if delete_after and os.path.exists(save_path):
+                                try:
+                                    os.remove(save_path)
+                                except Exception as de:
+                                    logger.warning(f"删除失败文件时出错: {de}")
+                            raise fe
                             if delete_after and os.path.exists(save_path):
                                 try:
                                     os.remove(save_path)
@@ -165,7 +181,7 @@ class DownloadManager:
                             raise fe
 
                     await db_manager.complete_download_task(task, {
-                        'download_path': save_path,
+                        'download_path': save_path if not delete_after else '',
                         'status': 'completed'
                     })
                 else:
