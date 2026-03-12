@@ -625,13 +625,6 @@ def setup_handlers():
         await do_sh(event, keyword)
         raise events.StopPropagation
 
-    # Login Handler
-    @bot.on(events.NewMessage(pattern='/login'))
-    async def login_handler(event):
-        await event.respond("🔑 请输入您的手机号 (国际格式，如 +86138...)：")
-        user_states[event.chat_id] = {'command': 'login', 'step': 'phone'}
-        raise events.StopPropagation
-
     # Global State Handler
     @bot.on(events.NewMessage)
     async def state_step_handler(event):
