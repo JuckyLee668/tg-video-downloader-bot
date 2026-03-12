@@ -415,6 +415,17 @@ def setup_handlers():
         user_states[event.chat_id] = {'command': 'login', 'step': 'phone'}
 
     # Redefining handlers with logic separated from event for recursion/interaction
+    def _is_valid_target(target: str) -> bool:
+        # accept @username, numeric id (with/without -100 prefix), t.me links
+        if not target:
+            return False
+        if target.startswith("https://t.me/") or target.startswith("t.me/"):
+            return True
+        if target.startswith("@") and len(target) > 3:
+            return True
+        if target.lstrip("-").isdigit():
+            return True
+        return False
     async def do_cc(event, identifier):
         if not tg_clients.user_client or not await tg_clients.user_client.is_user_authorized():
             await event.respond("❌ 用户客户端未登录。请先发送 `/login` 进行登录。")
@@ -709,6 +720,9 @@ def setup_handlers():
                 # user replied with target (and maybe indices)
                 parts = event.text.strip().split(' ', 1)
                 target = parts[0]
+                if not _is_valid_target(target):
+                    await event.respond("❌ 目标格式无效，请输入 ID、-100 开头的 channel_id、@username 或 t.me 链接。")
+                    return
                 indices = parts[1] if len(parts) > 1 else None
                 # 如果没有 indices 或结果很多，再问 indices
                 last_results = last_search_results.get(event.chat_id, [])
@@ -721,6 +735,10 @@ def setup_handlers():
                 raise events.StopPropagation
             elif step == 'indices':
                 target = state.get('target')
+                if not _is_valid_target(target):
+                    del user_states[event.chat_id]
+                    await event.respond("❌ 目标格式无效，请重新使用 /bf 输入目标 (ID/@username/t.me 链接)。")
+                    return
                 indices = event.text.strip()
                 if indices.lower() == 'all':
                     indices = None
