@@ -75,7 +75,7 @@ class DownloadManager:
             try:
                 self.active_tasks.add(task_id)
                 await db_manager.update_task_status(task_id, 'downloading')
-                logger.info(f"Worker {worker_id} 开始处理任务: {task['file_name']} (重试次数: {retry_count})")
+                logger.info(f"Worker {worker_id} 开始处理任务: {task['file_name']}")
                 
                 save_path = os.path.join(config.save_path, task['file_name'])
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)

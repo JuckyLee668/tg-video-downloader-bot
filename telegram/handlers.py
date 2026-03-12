@@ -347,7 +347,7 @@ def setup_handlers():
         target = event.pattern_match.group(2)
         indices_str = event.pattern_match.group(3)
         if not target:
-            await event.respond("📤 请输入目标聊天（ID 或 @username），可带序号范围。例如：`@channel 1-5,8`")
+            await event.respond("📤 请输入目标聊天（ID 或 @username）")
             user_states[event.chat_id] = {'command': 'bf', 'step': 'target'}
             raise events.StopPropagation
 
