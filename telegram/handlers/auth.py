@@ -12,7 +12,7 @@ async def auth_status_handler(event, arg=None):
         try:
             await tg_clients.user_client.connect()
             user_authorized = await tg_clients.user_client.is_user_authorized()
-            user_client_state = "已连接" if tg_clients.user_client.is_connected() else "未连接"
+            user_client_state = '✅' if tg_clients.user_client.is_connected() else '❌'
         except Exception as e:
             user_client_state = f"异常: {e}"
 
@@ -25,7 +25,7 @@ async def auth_status_handler(event, arg=None):
         "🔐 **登录状态检查**\n\n"
         f"• Bot 运行: ✅\n"
         f"• User API 配置: {'✅' if user_cfg_ok else '❌'}\n"
-        f"• User 客户端: '✅'{user_client_state}\n"
+        f"• User 客户端: {user_client_state}\n"
         f"• 已登录: {'✅' if user_authorized else '❌'}\n"
         f"• 代理: {proxy_text}\n"
         "\n若未登录，请发送 /login 按提示完成登录。"
