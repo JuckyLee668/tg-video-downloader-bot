@@ -161,6 +161,9 @@ class DownloadManager:
                     forward_target = task_data.get('forward_target')
                     delete_after = bool(task_data.get('delete_after_forward', False))
                     caption = task_data.get('caption', '') or ""
+                    if forward_target:
+                        try:
+                            peer = await tg_clients.user_client.get_entity(str(forward_target))
                             try:
                                 # 对于大文件且走代理的环境，send_file 自动分片偶尔失败
                                 # 我们先手动上传文件，获得 InputFile
