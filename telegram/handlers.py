@@ -812,7 +812,8 @@ def setup_handlers():
             'task_data': {
                 'caption': event.message.message,
                 'grouped_id': str(grouped_id) if grouped_id else None,
-                'access_hash': getattr(event.chat, 'access_hash', None)
+                'access_hash': getattr(event.chat, 'access_hash', None),
+                'requester_chat_id': chat_id
             }
         }
         await download_manager.add_task(task)

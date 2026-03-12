@@ -233,13 +233,17 @@ class DownloadManager:
                     })
 
                     # 通知触发者（如果记录了 requester_chat_id 且 bot_client 可用）
-                    requester = task_data.get('requester_chat_id')
+                    requester = task_data.get('requester_chat_id') or task.get('chat_id')
                     try:
                         if requester and tg_clients.bot_client:
                             msg = f"✅ 任务已成功归档: `{task['file_name']}`"
                             if forward_target:
                                 msg += f"\n📤 已转发至: `{forward_target}`"
-                            await tg_clients.bot_client.send_message(int(requester), msg)
+                            
+                            # Ensure target ID is integer
+                            target_id = int(str(requester))
+                            await tg_clients.bot_client.send_message(target_id, msg)
+                            logger.info(f"成功向用户 {target_id} 发送任务完成通知: {task['file_name']}")
                     except Exception as ne:
                         logger.warning(f"通知用户成功消息失败: {ne}")
                 else:
