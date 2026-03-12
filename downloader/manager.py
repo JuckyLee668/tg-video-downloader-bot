@@ -153,7 +153,21 @@ class DownloadManager:
                     if forward_target:
                         try:
                             peer = await tg_clients.user_client.get_entity(str(forward_target))
-                            await tg_clients.user_client.send_file(peer, save_path, caption=caption, force_document=task.get('media_type') == 'document')
+                            try:
+                                await tg_clients.user_client.send_file(
+                                    peer,
+                                    save_path,
+                                    caption=caption,
+                                    force_document=task.get('media_type') == 'document',
+                                    supports_streaming=True
+                                )
+                            except Exception as fe:
+                                # 针对 SaveBigFilePartRequest 再尝试一次默认参数（不强制 document）
+                                if "SaveBigFilePartRequest" in str(fe):
+                                    logger.warning(f"转发上传重试（streaming 模式）: {fe}")
+                                    await tg_clients.user_client.send_file(peer, save_path, caption=caption, supports_streaming=True)
+                                else:
+                                    raise fe
                             # 清理文件
                             if delete_after and os.path.exists(save_path):
                                 try:
