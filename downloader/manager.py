@@ -48,6 +48,11 @@ class DownloadManager:
             await self.queue.put(db_task)
         return task_id
 
+    async def cancel_user_tasks(self, chat_id: str):
+        """取消用户的所有待处理任务"""
+        await db_manager.cancel_tasks(chat_id)
+        logger.info(f"已取消用户 {chat_id} 的所有待处理任务")
+
     async def worker(self, worker_id: int):
         from telegram.client import tg_clients
         from telethon.errors import FloodWaitError, RPCError
@@ -55,6 +60,14 @@ class DownloadManager:
         while True:
             task = await self.queue.get()
             task_id = task['task_id']
+
+            # 检查任务是否已被取消
+            db_task = await db_manager.get_task_by_id(task_id)
+            if not db_task or db_task['status'] == 'cancelled':
+                logger.info(f"任务 {task_id} 已取消或不存在，跳过")
+                self.queue.task_done()
+                continue
+
             # normalize task_data
             task_data_raw = task.get('task_data') or "{}"
             if isinstance(task_data_raw, str):

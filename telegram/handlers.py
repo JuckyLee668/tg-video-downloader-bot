@@ -34,6 +34,8 @@ def setup_handlers():
                     types.BotCommand(command='auth', description='Check login status'),
                     types.BotCommand(command='login', description='Login to user account'),
                     types.BotCommand(command='dl', description='Download queue'),
+                    types.BotCommand(command='cancel', description='Cancel pending tasks'),
+                    types.BotCommand(command='clear', description='Clear search cache'),
                     types.BotCommand(command='bd', description='Batch download last search'),
                     types.BotCommand(command='bf', description='Batch forward to chat'),
                     types.BotCommand(command='csk', description='Keyword search in channel'),
@@ -52,40 +54,42 @@ def setup_handlers():
     asyncio.create_task(set_bot_commands())
 
     # Help & Features
-    @bot.on(events.NewMessage(pattern=r'/(start|help|h)'))
+    @bot.on(events.NewMessage(pattern=r'^/(start|help|h)$'))
     async def help_handler(event):
         help_text = (
             "🤖 **Telegram Media Downloader Bot**\n\n"
-            "📋 **下载管理:**\n"
-            "• `/download_list` (`/dl`) - 查看队列和历史\n"
-            "• `/search_history` (`/sh`) - 搜索下载历史记录\n\n"
-            "🔍 **频道搜索:**\n"
-            "• `/channel_connect` (`/cc`) - 连接到频道\n"
-            "• `/channel_search_keyword` (`/csk`) - 搜索关键词\n"
-            "• `/channel_search_time` (`/cst`) - 按时间搜索\n"
-            "• `/channel_search_recent` (`/csr`) - 获取最新消息\n\n"
-            "📥 **批量操作:**\n"
-            "• `/batch_download` (`/bd`) - 批量下载\n"
-            "• `/batch_download_formats` (`/bdf`) - 按格式下载\n"
-            "• `/batch_forward` (`/bf`) - 批量转发\n"
-            "  用法: `/bf 目标ID [序号]`\n\n"
-            "📊 **状态监控:**\n"
-            "• `/status` (`/s`) - 查看当前下载进度\n\n"
-            "📺 **频道管理:**\n"
-            "• `/channels` - 列出已连接频道\n"
-            "• `/channel_join` - 加入新频道\n"
-            "• `/login` - 登录 Telegram 账号\n\n"
-            "💡 所有搜索后的批量操作均支持序号范围，如 `1-5, 8, 10`。"
+            "🔐 **账号管理**\n"
+            "• `/auth` — 查看账号登录状态\n"
+            "• `/login` — 登录 Telegram 账号\n"
+            "• `/status` (`/s`) — 查看任务状态与下载进度\n\n"
+            "📺 **频道管理**\n"
+            "• `/channel_connect` (`/cc`) — 连接频道进行搜索\n"
+            "• `/channels` — 查看已连接频道\n\n"
+            "🔍 **频道内容搜索**\n"
+            "• `/channel_search_keyword` (`/csk`) — 按关键词搜索\n"
+            "• `/channel_search_recent` (`/csr`) — 获取最新消息\n"
+            "• `/channel_search_time` (`/cst`) — 按时间范围搜索\n\n"
+            "📥 **下载与转发**\n"
+            "• `/batch_download` (`/bd`) — 批量下载媒体\n"
+            "• `/batch_download_formats` (`/bdf`) — 按格式下载\n"
+            "• `/batch_forward` (`/bf`) — 批量转发媒体\n\n"
+            "📋 **下载记录**\n"
+            "• `/download_list` (`/dl`) — 查看下载队列和历史\n"
+            "• `/search_history` (`/sh`) — 搜索历史下载记录\n\n"
+            "⚙️ **系统命令**\n"
+            "• `/cancel` (`/c`) — 取消当前操作或下载\n"
+            "• `/clear` (`/cl`) — 清理下载队列和历史\n"
+            "• `/help` (`/h`) — 返回完整菜单"
         )
         await event.respond(help_text)
 
-    @bot.on(events.NewMessage(pattern='/features'))
+    @bot.on(events.NewMessage(pattern=r'^/features$'))
     async def features_handler(event):
         # ... (features_text remains same)
         pass
 
     # Status
-    @bot.on(events.NewMessage(pattern=r'/(status|s)'))
+    @bot.on(events.NewMessage(pattern=r'^/(status|s)$'))
     async def status_handler(event):
         summary = await db_manager.get_stats_summary()
         
@@ -112,8 +116,23 @@ def setup_handlers():
             
         await event.respond(status_text)
 
+    # Cancel tasks
+    @bot.on(events.NewMessage(pattern=r'^/(cancel|c)$'))
+    async def cancel_handler(event):
+        await download_manager.cancel_user_tasks(str(event.chat_id))
+        await event.respond("🚫 已成功取消您所有的待处理下载任务。")
+
+    # Clear search results
+    @bot.on(events.NewMessage(pattern=r'^/(clear|cl)$'))
+    async def clear_handler(event):
+        if event.chat_id in last_search_results:
+            del last_search_results[event.chat_id]
+            await event.respond("🧹 已清理搜索结果缓存。")
+        else:
+            await event.respond("📭 搜索缓存本就是空的。")
+
     # Login / Auth status
-    @bot.on(events.NewMessage(pattern=r'/(auth|login_status)'))
+    @bot.on(events.NewMessage(pattern=r'^/(auth|login_status)$'))
     async def auth_status_handler(event):
         # Bot is running if this handler executes
         user_cfg_ok = bool(config.user_api.api_id and config.user_api.api_hash)
@@ -146,7 +165,7 @@ def setup_handlers():
         await event.respond(msg)
 
     # Download List
-    @bot.on(events.NewMessage(pattern=r'/(download_list|dl)(?: (\d+))?'))
+    @bot.on(events.NewMessage(pattern=r'^/(download_list|dl)(?: +(\d+))?$'))
     async def download_list_handler(event):
         page = int(event.pattern_match.group(2) or 1)
         res = await db_manager.get_download_list(page, 10)
@@ -167,9 +186,14 @@ def setup_handlers():
         await event.respond(response)
 
     # Search History
-    @bot.on(events.NewMessage(pattern=r'/(search_history|sh) (.+)'))
+    @bot.on(events.NewMessage(pattern=r'^/(search_history|sh)(?: +(.+))?$'))
     async def search_history_handler(event):
         keyword = event.pattern_match.group(2)
+        if not keyword:
+            await event.respond("📜 请输入要搜索的历史记录关键词：")
+            user_states[event.chat_id] = {'command': 'sh'}
+            return
+
         results = await db_manager.search_history(keyword)
         
         if not results:
@@ -183,9 +207,8 @@ def setup_handlers():
         await event.respond(response)
 
     # Channel Connect
-    @bot.on(events.NewMessage(pattern=r'/(channel_connect|cc) (.+)'))
+    @bot.on(events.NewMessage(pattern=r'^/(channel_connect|cc)(?: +(.+))?$'))
     async def connect_channel_handler(event):
-        # ...
         if not tg_clients.user_client or not await tg_clients.user_client.is_user_authorized():
             await event.respond("❌ 用户客户端未登录。请先发送 `/login` 进行登录。")
             return
@@ -195,6 +218,11 @@ def setup_handlers():
             init_searcher(tg_clients.user_client)
             
         identifier = event.pattern_match.group(2)
+        if not identifier:
+            await event.respond("🔗 请输入要连接的频道用户名或邀请链接：")
+            user_states[event.chat_id] = {'command': 'cc'}
+            return
+
         await event.respond(f"⏳ 正在尝试连接频道: `{identifier}`...")
         
         try:
@@ -204,7 +232,7 @@ def setup_handlers():
             await event.respond(f"❌ 连接失败: {str(e)}")
 
     # Channel Search Keyword
-    @bot.on(events.NewMessage(pattern=r'/(channel_search_keyword|csk) (.+)'))
+    @bot.on(events.NewMessage(pattern=r'^/(channel_search_keyword|csk)(?: +(.+))?$'))
     async def search_keyword_handler(event):
         if not search.searcher:
             from telegram.search import init_searcher
@@ -215,6 +243,11 @@ def setup_handlers():
             return
             
         keyword = event.pattern_match.group(2)
+        if not keyword:
+            await event.respond("🔍 请输入要搜索的关键词：")
+            user_states[event.chat_id] = {'command': 'csk'}
+            return
+
         await event.respond(f"🔍 正在搜索关键词: `{keyword}`...")
         
         try:
@@ -239,23 +272,22 @@ def setup_handlers():
             await event.respond(f"❌ 搜索出错: {str(e)}")
 
     # Channel Search Time
-    @bot.on(events.NewMessage(pattern=r'/(channel_search_time|cst)(?: (\d{4}-\d{2}-\d{2}))?(?: (\d{4}-\d{2}-\d{2}))?'))
+    @bot.on(events.NewMessage(pattern=r'^/(channel_search_time|cst)(?: +(\d{4}-\d{2}-\d{2}))?(?: +(\d{4}-\d{2}-\d{2}))?$'))
     async def search_time_handler(event):
         start = event.pattern_match.group(2)
         end = event.pattern_match.group(3)
         if not start:
             await event.respond("⌛ 请输入开始日期 (YYYY-MM-DD)：")
             user_states[event.chat_id] = {'command': 'cst', 'step': 'start'}
-            raise events.StopPropagation
+            return
         if start and not end:
             await event.respond("⌛ 请输入结束日期 (YYYY-MM-DD)：")
             user_states[event.chat_id] = {'command': 'cst', 'step': 'end', 'start': start}
-            raise events.StopPropagation
+            return
         await do_cst(event, start, end)
-        raise events.StopPropagation
 
     # Channel Search Recent
-    @bot.on(events.NewMessage(pattern=r'/(channel_search_recent|csr)(?: (\d+))?'))
+    @bot.on(events.NewMessage(pattern=r'^/(channel_search_recent|csr)(?: +(\d+))?$'))
     async def search_recent_handler(event):
         if not search.searcher:
             from telegram.search import init_searcher
@@ -283,7 +315,7 @@ def setup_handlers():
             await event.respond(f"❌ 获取出错: {str(e)}")
 
     # Batch Download
-    @bot.on(events.NewMessage(pattern=r'/(batch_download|bd)(?: (.+))?'))
+    @bot.on(events.NewMessage(pattern=r'^/(batch_download|bd)(?: +(.+))?$'))
     async def batch_download_handler(event):
         arg = event.pattern_match.group(2)
         last_results = last_search_results.get(event.chat_id, [])
@@ -330,26 +362,25 @@ def setup_handlers():
         await event.respond(f"✅ 成功添加 {count} 个下载任务。")
 
     # Batch Download Formats
-    @bot.on(events.NewMessage(pattern=r'/(batch_download_formats|bdf)(?: ([a-zA-Z0-9, ]+))?(?: (.+))?'))
+    @bot.on(events.NewMessage(pattern=r'^/(batch_download_formats|bdf)(?: +([a-zA-Z0-9, ]+))?(?: +(.+))?$'))
     async def batch_download_formats_handler(event):
         formats_str = event.pattern_match.group(2)
         indices_str = event.pattern_match.group(3)
         if not formats_str:
             await event.respond("🧩 请输入格式列表（如: mp4, mp3, mkv）：")
-            user_states[event.chat_id] = {'command': 'bdf'}
-            raise events.StopPropagation
+            user_states[event.chat_id] = {'command': 'bdf', 'step': 'formats'}
+            return
         await do_bdf(event, formats_str, indices_str)
-        raise events.StopPropagation
 
     # Batch Forward
-    @bot.on(events.NewMessage(pattern=r'/(batch_forward|bf)(?: ([^ ]+))?(?: (.+))?'))
+    @bot.on(events.NewMessage(pattern=r'^/(batch_forward|bf)(?: +([^ ]+))?(?: +(.+))?$'))
     async def batch_forward_handler(event):
         target = event.pattern_match.group(2)
         indices_str = event.pattern_match.group(3)
         if not target:
             await event.respond("📤 请输入目标聊天（ID 或 @username）")
             user_states[event.chat_id] = {'command': 'bf', 'step': 'target'}
-            raise events.StopPropagation
+            return
 
         last_results = last_search_results.get(event.chat_id, [])
         if not last_results:
@@ -359,15 +390,14 @@ def setup_handlers():
         if not indices_str and len(last_results) > 20:
             await event.respond(f"📤 最近搜索共 {len(last_results)} 条。请回复需要转发的序号范围，例如 `1-5,8`，或回复 `all` 表示全部。")
             user_states[event.chat_id] = {'command': 'bf', 'step': 'indices', 'target': target}
-            raise events.StopPropagation
+            return
 
         # 询问是否删除
         user_states[event.chat_id] = {'command': 'bf', 'step': 'delete', 'target': target, 'indices': indices_str}
         await event.respond("🗑️ 转发完成后是否删除本地文件？回复 yes/no（默认 yes）。")
-        raise events.StopPropagation
 
     # Channels List
-    @bot.on(events.NewMessage(pattern='/channels'))
+    @bot.on(events.NewMessage(pattern=r'^/channels$'))
     async def channels_list_handler(event):
         channels = await db_manager.get_connected_channels()
         if not channels:
@@ -379,18 +409,8 @@ def setup_handlers():
             response += f"• **{ch['title']}** (@{ch['username'] or 'N/A'})\n  ID: `{ch['channel_id']}`\n"
         await event.respond(response)
 
-    # Channel Join
-    @bot.on(events.NewMessage(pattern=r'/channel_join (.+)'))
-    async def channel_join_handler(event):
-        link = event.pattern_match.group(1)
-        try:
-            await search.searcher.join_channel(link)
-            await event.respond("✅ 成功加入频道！")
-        except Exception as e:
-            await event.respond(f"❌ 加入失败: {e}")
-
     # Forward Link Download
-    @bot.on(events.NewMessage(pattern=r'/forward (https://t\.me/c/(\d+)/(\d+)|https://t\.me/([a-zA-Z0-9_]+)/(\d+))'))
+    @bot.on(events.NewMessage(pattern=r'^/forward (https://t\.me/c/(\d+)/(\d+)|https://t\.me/([a-zA-Z0-9_]+)/(\d+))$'))
     async def forward_handler(event):
         link = event.pattern_match.group(1)
         try:
@@ -409,7 +429,7 @@ def setup_handlers():
     # Login & Interaction Logic
     user_states = {}
 
-    @bot.on(events.NewMessage(pattern='/login'))
+    @bot.on(events.NewMessage(pattern=r'^/login$'))
     async def login_handler(event):
         await event.respond("🔑 请输入您的手机号 (国际格式，如 +86138...)：")
         user_states[event.chat_id] = {'command': 'login', 'step': 'phone'}
@@ -726,10 +746,25 @@ def setup_handlers():
                 raise events.StopPropagation
 
         elif cmd == 'bdf':
-            formats_str = event.text.strip()
-            del user_states[event.chat_id]
-            await do_bdf(event, formats_str, None)
-            raise events.StopPropagation
+            step = state.get('step')
+            if step == 'formats':
+                formats_str = event.text.strip()
+                last_results = last_search_results.get(event.chat_id, [])
+                if last_results and len(last_results) > 20:
+                    await event.respond(f"📤 最近搜索共 {len(last_results)} 条。请回复需要下载的序号范围（如 `1-5,8` 或 `all`）：")
+                    user_states[event.chat_id] = {'command': 'bdf', 'step': 'indices', 'formats': formats_str}
+                else:
+                    del user_states[event.chat_id]
+                    await do_bdf(event, formats_str, None)
+                raise events.StopPropagation
+            elif step == 'indices':
+                formats_str = state.get('formats')
+                indices = event.text.strip()
+                if indices.lower() == 'all':
+                    indices = None
+                del user_states[event.chat_id]
+                await do_bdf(event, formats_str, indices)
+                raise events.StopPropagation
 
         elif cmd == 'bf':
             step = state.get('step')

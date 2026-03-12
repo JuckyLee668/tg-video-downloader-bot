@@ -400,6 +400,23 @@ class DatabaseManager:
             await db.execute("DELETE FROM connected_channels WHERE channel_id = ?", (str(channel_id),))
             await db.commit()
 
+    async def cancel_tasks(self, chat_id: str):
+        """取消指定用户的所有待处理任务"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE download_queue SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE chat_id = ? AND status = 'pending'",
+                (str(chat_id),)
+            )
+            await db.commit()
+
+    async def cancel_all_tasks(self):
+        """取消所有待处理任务"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE download_queue SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE status = 'pending'"
+            )
+            await db.commit()
+
     async def get_stats_summary(self):
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
