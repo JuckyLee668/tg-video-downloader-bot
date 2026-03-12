@@ -28,15 +28,18 @@ def setup_handlers():
                 scope=types.BotCommandScopeDefault(),
                 lang_code='en',
                 commands=[
-                    types.BotCommand(command='start', description='Start & Help'),
-                    types.BotCommand(command='status', description='Current download status'),
-                    types.BotCommand(command='dl', description='Download queue & history'),
-                    types.BotCommand(command='cc', description='Connect to a channel'),
-                    types.BotCommand(command='csk', description='Search keyword in channel'),
-                    types.BotCommand(command='csr', description='Get recent media from channel'),
-                    types.BotCommand(command='bd', description='Batch download from results'),
-                    types.BotCommand(command='channels', description='List connected channels'),
+                    types.BotCommand(command='start', description='Help & feature list'),
+                    types.BotCommand(command='status', description='Show system/download status'),
+                    types.BotCommand(command='auth', description='Check login status'),
                     types.BotCommand(command='login', description='Login to user account'),
+                    types.BotCommand(command='dl', description='Download queue'),
+                    types.BotCommand(command='bd', description='Batch download last search'),
+                    types.BotCommand(command='bf', description='Batch forward to chat'),
+                    types.BotCommand(command='csk', description='Keyword search in channel'),
+                    types.BotCommand(command='cst', description='Search by time range'),
+                    types.BotCommand(command='csr', description='Recent messages from channel'),
+                    types.BotCommand(command='cc', description='Connect/select channel'),
+                    types.BotCommand(command='channels', description='List connected channels'),
                 ]
             ))
             logger.info("Bot commands menu has been set up")
@@ -107,6 +110,39 @@ def setup_handlers():
             status_text += "💤 当前没有正在运行的任务。"
             
         await event.respond(status_text)
+
+    # Login / Auth status
+    @bot.on(events.NewMessage(pattern=r'/(auth|login_status)'))
+    async def auth_status_handler(event):
+        # Bot is running if this handler executes
+        user_cfg_ok = bool(config.user_api.api_id and config.user_api.api_hash)
+
+        user_client_state = "未创建"
+        user_authorized = False
+        if tg_clients.user_client:
+            try:
+                # ensure connection check doesn't raise
+                await tg_clients.user_client.connect()
+                user_authorized = await tg_clients.user_client.is_user_authorized()
+                user_client_state = "已连接" if tg_clients.user_client.is_connected() else "未连接"
+            except Exception as e:
+                user_client_state = f"异常: {e}"
+
+        proxy_desc = config.user_api.proxy or config.proxy
+        proxy_text = "已禁用" if not proxy_desc else (
+            f"{proxy_desc.scheme}://{proxy_desc.hostname}:{proxy_desc.port}"
+        )
+
+        msg = (
+            "🔐 **登录状态检查**\n\n"
+            f"• Bot 运行: ✅\n"
+            f"• User API 配置: {'✅' if user_cfg_ok else '❌ 未设置 USER_API_ID/HASH'}\n"
+            f"• User 客户端: {user_client_state}\n"
+            f"• 已登录: {'✅' if user_authorized else '❌'}\n"
+            f"• 代理: {proxy_text}\n"
+            "\n若未登录，请发送 /login 按提示完成登录。"
+        )
+        await event.respond(msg)
 
     # Download List
     @bot.on(events.NewMessage(pattern=r'/(download_list|dl)(?: (\d+))?'))

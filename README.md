@@ -1,68 +1,101 @@
-# 🤖 Telegram Media Downloader Bot
+# Telegram Media Downloader Bot
 
-一个功能强大的 Telegram 媒体下载机器人，结合了 **MTProto 高速下载** 和 **Web 可视化管理面板**。支持批量下载不可转发频道媒体、关键词搜索、历史记录。
+基于 **Telethon + FastAPI** 的多端媒体下载器，提供 Telegram Bot 指令与 Web 控制台，支持批量下载 / 转发、关键字与时间范围搜索，并可按需启用 HTTP/SOCKS5 代理。
 
-## ✨ 主要特性
+## 功能亮点
+- 高并发下载：自适应并发队列，支持断点、批量任务。
+- 双端控制：Bot 命令 + Web 界面实时查看/管理任务。
+- 搜索增强：按关键字、时间区间或最近消息筛选，并可一键批量下载/转发。
+- 账号双客户端：Bot 客户端 + 用户（MTProto）客户端，分离权限更安全。
+- 代理支持：可为全局或用户客户端配置 HTTP / SOCKS5 代理（默认关闭）。
 
-*   🚀 **高速下载**: 利用 Telethon 的并行分片逻辑，相比标准下载提升数倍速度。
-*   📊 **Web 控制面板**: 现代化的前端界面，支持实时下载队列管理、状态监控。
-*   🔍 **深度搜索**: 支持关键词搜索、时间段筛选、获取最近媒体，并支持一键批量下载。
-*   🔄 **多端同步**: Web 界面与 Telegram Bot 指令（`/dl`, `/status`）进度完美同步。
-*   📂 **自动归档**: 下载成功的媒体会自动记录到历史库，支持搜索和查看。
-*   🛠️ **代理支持**: 支持 HTTP 和 SOCKS5 代理。
+## 环境要求
+- Python 3.8+
+- 可访问 Telegram 的网络（如需代理可在配置中开启）
 
-## 🛠️ 技术栈
-
-*   **Backend**: Python (FastAPI, Telethon, AioSqlite)
-*   **Database**: SQLite (WAL 模式)
-*   **Frontend**: HTML, Vanilla JS, Tailwind CSS
-*   **Logging**: Loguru
-
-## 🚀 快速开始
-
-### 1. 环境准备
-确保您的机器已安装 Python 3.8+。
-
-### 2. 克隆并安装
+## 安装与启动
 ```bash
 git clone https://github.com/your-repo/tg-video-downloader-bot.git
-cd app
+cd tg-video-downloader-bot
+python -m venv venv
+.\venv\Scripts\activate   # Linux/macOS 用 source venv/bin/activate
 pip install -r requirements.txt
-```
-
-### 3. 配置
-复制 `.env.example` 为 `.env` 并填入您的 API 信息：
-```env
-API_ID=your_api_id
-API_HASH=your_api_hash
-BOT_TOKEN=your_bot_token
-```
-
-同时可以在 `config.yaml` 中调整下载路径和并发数。
-
-### 4. 运行
-```bash
 python main.py
 ```
-运行后，Bot 将在 Telegram 上线，同时 Web 界面默认通过 `http://localhost:8000` 访问。
+启动成功后：
+- Web 控制台：`http://127.0.0.1:8000`
+- Bot 会自动上线（使用你提供的 Bot Token）。
 
-## 🤖 常用指令
+## 配置
+### 1) .env（必填）
+复制 `.env.example` 为 `.env` 并填入：
+```
+BOT_TOKEN=你的BotToken
+USER_API_ID=你的UserApiId
+USER_API_HASH=你的UserApiHash
+```
 
-*   `/start` - 开始并查看帮助
-*   `/dl` - 查看下载队列和进度
-*   `/status` - 系统状态监控
-*   `/cc` - 连接到目标频道
-*   `/csk` - 搜索频道关键词
-*   `/bd` - 批量下载搜索结果
-*   `/login` - 登录用户账号（MTProto 下载必需）
+### 2) config.yaml（可选）
+- 下载路径、并发、文件命名等常规项已默认配置。
+- **代理默认关闭**：
+```yaml
+proxy: null
+user_api:
+  api_id: "<填在 .env>"
+  api_hash: "<填在 .env>"
+  proxy: null
+```
+- 如需开启全局/用户代理，填写：
+```yaml
+proxy:
+  scheme: socks5   # 或 http
+  hostname: 127.0.0.1
+  port: 10808
+  username: null
+  password: null
+  rdns: true
+user_api:
+  api_id: "<...>"
+  api_hash: "<...>"
+  proxy: null      # 若只想用户端走代理，可在这里填，global 仍为 null
+```
+也可以在 Web 控制台 “Settings & Proxy” 中保存；保存后写入 config.yaml，并同时应用到用户客户端。
 
-## 📦 目录结构
+## Bot 命令速览
+| 命令 | 作用 |
+| --- | --- |
+| /start | 帮助 / 功能列表 |
+| /status ( /s ) | 查看系统/下载状态 |
+| /auth ( /login_status ) | 检查用户客户端登录与代理状态 |
+| /login | 登录用户客户端（MTProto） |
+| /dl | 查看下载队列 |
+| /bd | 批量下载最近一次搜索结果 |
+| /bf | 批量转发到指定聊天 |
+| /csk | 渠道关键字搜索 |
+| /cst | 渠道时间范围搜索 |
+| /csr | 渠道最近消息 |
+| /cc | 连接/切换渠道 |
+| /channels | 已连接渠道列表 |
 
-*   `core/`: 核心数据库和配置管理
-*   `downloader/`: 下载引擎和队列管理器
-*   `telegram/`: Bot 处理器、搜索逻辑和客户端管理
-*   `web/`: REST API 和 Web 服务器
-*   `public/`: 前端静态文件
+## Web 控制台
+- 地址：`http://127.0.0.1:8000`
+- Tab “Settings & Proxy” 可配置并保存代理（默认关闭）。保存后需重启以完全作用于 Telegram 客户端。
 
-## ⚖️ 免责声明
-本工具仅供学习和个人备份使用，请遵守 Telegram 的服务条款及当地法律法规。
+## 常见问题
+1) **网页打不开 /502**  
+   - 确认 `python main.py` 正在运行且监听 `127.0.0.1:8000`。  
+   - 如端口被占用，可在 `main.py` 将 `port=8000` 改为空闲端口重新启动。
+2) **需要代理才能连上 Telegram**  
+   - 在 `config.yaml` 或 Web 里填好代理参数，保存后重启。
+3) **登录失败**  
+   - 确保 `.env` 中 USER_API_ID / HASH 正确；在 Telegram 与 Bot 对话中使用 `/login` 按提示输入验证码。
+
+## 目录结构速览
+- `core/` 配置与数据库
+- `telegram/` Bot & 用户客户端、命令、搜索
+- `downloader/` 下载管理队列
+- `web/` FastAPI 路由与前端资源
+- `public/` Web 前端静态文件
+
+## 免责声明
+本项目仅供学习与个人备份使用，请遵守 Telegram 服务条款与所在地法律法规。***

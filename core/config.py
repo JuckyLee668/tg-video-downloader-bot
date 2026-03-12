@@ -1,10 +1,19 @@
 import os
 import yaml
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+from loguru import logger
 
 load_dotenv(override=True)
+
+class ProxyConfig(BaseModel):
+    scheme: str = "http"
+    hostname: str = "127.0.0.1"
+    port: int = 1080
+    username: Optional[str] = None
+    password: Optional[str] = None
+    rdns: bool = True  # whether to resolve DNS on proxy side
 
 class ChatConfig(BaseModel):
     chat_id: str
@@ -14,18 +23,11 @@ class ChatConfig(BaseModel):
 class UserApiConfig(BaseModel):
     api_id: Optional[str] = None
     api_hash: Optional[str] = None
-    proxy: Optional[Dict[str, Any]] = None
-
-class ProxyConfig(BaseModel):
-    scheme: str = "http"
-    hostname: str = "127.0.0.1"
-    port: int = 1080
-    username: Optional[str] = None
-    password: Optional[str] = None
+    proxy: Optional[ProxyConfig] = None
 
 class Config(BaseModel):
     bot_token: str = Field(default="")
-    proxy: Optional[ProxyConfig] = None
+    proxy: Optional[ProxyConfig] = None  # global proxy (default off)
     chat: List[ChatConfig] = Field(default_factory=list)
     enable_private_chat: bool = Field(default=True)
     media_types: List[str] = Field(default_factory=lambda: ["audio", "document", "photo", "video", "voice", "animation"])

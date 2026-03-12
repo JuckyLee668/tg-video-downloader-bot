@@ -6,6 +6,7 @@ from telegram.client import tg_clients
 from telegram import search
 from typing import List, Dict, Any
 from datetime import datetime
+from loguru import logger
 from web.api_models import (
     ConnectRequest, JoinRequest, SearchKeywordRequest, 
     SearchTimeRequest, SearchRecentRequest, DownloadBatchRequest,
@@ -31,9 +32,12 @@ async def get_config():
 @router.post("/config/proxy")
 async def set_proxy(req: ProxyConfigRequest):
     try:
-        config.proxy = ProxyConfig(**req.model_dump())
+        proxy_cfg = ProxyConfig(**req.model_dump())
+        # apply to both global and user client proxy for consistency
+        config.proxy = proxy_cfg
+        config.user_api.proxy = proxy_cfg
         config.save()
-        return {"status": "success", "proxy": config.proxy.model_dump()}
+        return {"status": "success", "proxy": proxy_cfg.model_dump()}
     except Exception as e:
         logger.exception(f"设置代理失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))

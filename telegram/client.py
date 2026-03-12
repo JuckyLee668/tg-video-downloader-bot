@@ -1,25 +1,45 @@
 import os
 import asyncio
 from typing import Optional
-from telethon import TelegramClient, events
+from telethon import TelegramClient
 from telethon.sessions import StringSession
-from core.config import config
+from core.config import config, ProxyConfig
 from loguru import logger
 
 from telegram.search import init_searcher
 
+# Telethon connection tuning to improve stability behind proxies
+TELETHON_KWARGS = dict(
+    connection_retries=8,
+    request_retries=5,
+    timeout=30,        # seconds
+    use_ipv6=False     # many proxies / networks don't handle IPv6 MTProto well
+)
+
+
 def get_proxy_dict(proxy_config):
+    """
+    Normalize proxy configuration to the mapping expected by Telethon.
+    Accepts either ProxyConfig or a plain dict (from API payloads).
+    """
     if not proxy_config:
         return None
-    import socks
+
+    if isinstance(proxy_config, ProxyConfig):
+        proxy_config = proxy_config.model_dump()
+
+    scheme = proxy_config.get("scheme", "http").lower()
+
     return {
-        'proxy_type': socks.SOCKS5 if proxy_config.scheme == 'socks5' else socks.HTTP,
-        'addr': proxy_config.hostname,
-        'port': proxy_config.port,
-        'username': proxy_config.username,
-        'password': proxy_config.password,
-        'rdns': True
+        # Telethon/python-socks accept string protocol names
+        "proxy_type": "socks5" if scheme == "socks5" else "http",
+        "addr": proxy_config.get("hostname", "127.0.0.1"),
+        "port": int(proxy_config.get("port", 1080)),
+        "username": proxy_config.get("username"),
+        "password": proxy_config.get("password"),
+        "rdns": proxy_config.get("rdns", True),
     }
+
 
 class TelegramClientWrapper:
     def __init__(self):
@@ -30,14 +50,20 @@ class TelegramClientWrapper:
         self.phone_code_hash = None
         
     async def init(self):
-        proxy = get_proxy_dict(config.proxy)
+        # Bot uses global proxy; user client prefers dedicated proxy when provided
+        bot_proxy = get_proxy_dict(config.proxy)
+        user_proxy = get_proxy_dict(config.user_api.proxy or config.proxy)
         
         # Initialize Bot Client
         if config.bot_token:
-            self.bot_client = TelegramClient('bot_session', 
-                                           int(config.user_api.api_id or 0), 
-                                           config.user_api.api_hash or "",
-                                           proxy=proxy)
+            logger.info(f"Init bot client with proxy={bot_proxy}")
+            self.bot_client = TelegramClient(
+                "bot_session",
+                int(config.user_api.api_id or 0),
+                config.user_api.api_hash or "",
+                proxy=bot_proxy,
+                **TELETHON_KWARGS,
+            )
             await self.bot_client.start(bot_token=config.bot_token)
             logger.info("Telegram Bot 客户端已启动 (MTProto)")
 
@@ -48,10 +74,14 @@ class TelegramClientWrapper:
                 with open(self.session_file, "r") as f:
                     session_str = f.read().strip()
             
-            self.user_client = TelegramClient(StringSession(session_str), 
-                                            int(config.user_api.api_id), 
-                                            config.user_api.api_hash,
-                                            proxy=proxy)
+            logger.info(f"Init user client with proxy={user_proxy}")
+            self.user_client = TelegramClient(
+                StringSession(session_str),
+                int(config.user_api.api_id),
+                config.user_api.api_hash,
+                proxy=user_proxy,
+                **TELETHON_KWARGS,
+            )
             await self.user_client.connect()
             
             if await self.user_client.is_user_authorized():
@@ -70,11 +100,14 @@ class TelegramClientWrapper:
             if not config.user_api.api_id or not config.user_api.api_hash:
                 raise Exception("未配置 USER_API_ID 或 USER_API_HASH，请检查 .env 文件")
             
-            proxy = get_proxy_dict(config.proxy)
-            self.user_client = TelegramClient(StringSession(""), 
-                                            int(config.user_api.api_id), 
-                                            config.user_api.api_hash,
-                                            proxy=proxy)
+            proxy = get_proxy_dict(config.user_api.proxy or config.proxy)
+            self.user_client = TelegramClient(
+                StringSession(""),
+                int(config.user_api.api_id),
+                config.user_api.api_hash,
+                proxy=proxy,
+                **TELETHON_KWARGS,
+            )
             await self.user_client.connect()
 
         self.phone = phone

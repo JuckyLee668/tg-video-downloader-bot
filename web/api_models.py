@@ -39,6 +39,7 @@ class ProxyConfigRequest(BaseModel):
     port: int = 1080
     username: Optional[str] = None
     password: Optional[str] = None
+    rdns: bool = True
 
 class ConfigResponse(BaseModel):
     bot_token: str
