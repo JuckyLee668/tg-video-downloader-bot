@@ -154,17 +154,29 @@ class DownloadManager:
                         try:
                             peer = await tg_clients.user_client.get_entity(str(forward_target))
                             try:
+                                # 对于大文件且走代理的环境，send_file 自动分片偶尔失败
+                                # 我们先手动上传文件，获得 InputFile
+                                file_size = os.path.getsize(save_path)
+                                force_doc = task.get('media_type') == 'document'
+                                
+                                logger.info(f"正在上传转发文件: {task['file_name']} ({file_size / 1024 / 1024:.2f} MB)")
+                                
+                                uploaded_file = await tg_clients.user_client.upload_file(
+                                    save_path,
+                                    progress_callback=self.create_progress_callback(task_id) # 复用进度回调显示上传进度
+                                )
+                                
                                 await tg_clients.user_client.send_file(
                                     peer,
-                                    save_path,
+                                    uploaded_file,
                                     caption=caption,
-                                    force_document=task.get('media_type') == 'document'
+                                    force_document=force_doc
                                 )
                             except Exception as fe:
-                                # 针对 SaveBigFilePartRequest 再尝试一次
                                 if "SaveBigFilePartRequest" in str(fe) or "file parts is invalid" in str(fe):
-                                    logger.warning(f"转发上传第一阶段失败，2秒后重试: {fe}")
-                                    await asyncio.sleep(2)
+                                    logger.warning(f"手动上传转发失败，尝试最终降级方案: {fe}")
+                                    await asyncio.sleep(3)
+                                    # 最终降级：直接由 Telethon 托管最原始的上传
                                     await tg_clients.user_client.send_file(peer, save_path, caption=caption)
                                 else:
                                     raise fe
