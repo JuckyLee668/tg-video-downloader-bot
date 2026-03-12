@@ -231,6 +231,17 @@ class DownloadManager:
                         'download_path': save_path if not delete_after else '',
                         'status': 'completed'
                     })
+
+                    # 通知触发者（如果记录了 requester_chat_id 且 bot_client 可用）
+                    requester = task_data.get('requester_chat_id')
+                    try:
+                        if requester and tg_clients.bot_client:
+                            msg = f"✅ 任务已成功归档: `{task['file_name']}`"
+                            if forward_target:
+                                msg += f"\n📤 已转发至: `{forward_target}`"
+                            await tg_clients.bot_client.send_message(int(requester), msg)
+                    except Exception as ne:
+                        logger.warning(f"通知用户成功消息失败: {ne}")
                 else:
                     raise Exception("下载失败，未能在指定引擎中完成下载")
 
