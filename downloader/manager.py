@@ -119,7 +119,7 @@ class DownloadManager:
                         await asyncio.sleep(e.seconds + 1)
                         # 重新放入队列头部优先重试
                         await self.queue.put(task)
-                        return # This return is inside a sub-try, but we need to exit this task processing
+                        continue
                         
                     except Exception as e:
                         # 检查是否是由于 Flood 导致的通用错误（有时 Telethon 不会封装成 FloodWaitError）
@@ -134,7 +134,7 @@ class DownloadManager:
                             await db_manager.update_task_status(task_id, 'pending', f"限速等待: {wait_seconds}s")
                             await asyncio.sleep(wait_seconds + 1)
                             await self.queue.put(task)
-                            return
+                            continue
                         
                         logger.error(f"MTProto 下载失败: {e}")
                         raise e
@@ -158,16 +158,17 @@ class DownloadManager:
                                     peer,
                                     save_path,
                                     caption=caption,
-                                    force_document=task.get('media_type') == 'document',
-                                    supports_streaming=True
+                                    force_document=task.get('media_type') == 'document'
                                 )
                             except Exception as fe:
-                                # 针对 SaveBigFilePartRequest 再尝试一次默认参数（不强制 document）
-                                if "SaveBigFilePartRequest" in str(fe):
-                                    logger.warning(f"转发上传重试（streaming 模式）: {fe}")
-                                    await tg_clients.user_client.send_file(peer, save_path, caption=caption, supports_streaming=True)
+                                # 针对 SaveBigFilePartRequest 再尝试一次
+                                if "SaveBigFilePartRequest" in str(fe) or "file parts is invalid" in str(fe):
+                                    logger.warning(f"转发上传第一阶段失败，2秒后重试: {fe}")
+                                    await asyncio.sleep(2)
+                                    await tg_clients.user_client.send_file(peer, save_path, caption=caption)
                                 else:
                                     raise fe
+                            
                             # 清理文件
                             if delete_after and os.path.exists(save_path):
                                 try:
@@ -176,22 +177,12 @@ class DownloadManager:
                                     logger.warning(f"删除转发后文件失败: {de}")
                         except Exception as fe:
                             logger.error(f"下载完成但转发失败: {fe}")
-                            await db_manager.update_task_status(task_id, 'failed', str(fe))
                             # 删除文件避免堆积
                             if delete_after and os.path.exists(save_path):
                                 try:
                                     os.remove(save_path)
                                 except Exception as de:
                                     logger.warning(f"删除失败文件时出错: {de}")
-                            raise fe
-                            if delete_after and os.path.exists(save_path):
-                                try:
-                                    os.remove(save_path)
-                                except Exception as de:
-                                    logger.warning(f"删除转发后文件失败: {de}")
-                        except Exception as fe:
-                            logger.error(f"下载完成但转发失败: {fe}")
-                            await db_manager.update_task_status(task_id, 'failed', str(fe))
                             raise fe
 
                     await db_manager.complete_download_task(task, {
@@ -208,14 +199,13 @@ class DownloadManager:
                 # 通知触发者（如果记录了 requester_chat_id 且 bot_client 可用）
                 requester = task_data.get('requester_chat_id')
                 try:
-                    from telegram.client import tg_clients
                     if requester and tg_clients.bot_client:
                         await tg_clients.bot_client.send_message(requester, f"❌ 任务 {task.get('file_name')} 失败: {e}")
                 except Exception as ne:
                     logger.warning(f"通知用户失败: {ne}")
 
-                # 删除任务，避免无限重试
-                await db_manager.delete_download_task(task_id)
+                # 不再直接删除任务，允许在数据库中保留状态以便重试或查看
+                # await db_manager.delete_download_task(task_id)
             
             finally:
                 if task_id in self.active_tasks:
