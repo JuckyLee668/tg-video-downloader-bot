@@ -82,6 +82,11 @@ class DownloadManager:
                 
                 downloaded_success = False
                 
+                # 尝试获取消息对象的逻辑
+                download_client = None
+                message_obj = None
+                
+                # 1. 优先尝试使用 User Client (支持频道/大文件/限制内容)
                 if tg_clients.user_client and await tg_clients.user_client.is_user_authorized():
                     try:
                         peer_id_str = task.get('channel_id') or task.get('chat_id')
@@ -94,63 +99,69 @@ class DownloadManager:
                             try:
                                 cid = int(str(peer_id_str).replace('-100', ''))
                                 entity = InputPeerChannel(cid, int(access_hash))
-                            except Exception as e:
-                                logger.warning(f"使用 access_hash 构造 InputPeerChannel 失败: {e}")
-                        if not entity:
-                            peer_id = int(peer_id_str)
-                            entity = await tg_clients.user_client.get_input_entity(peer_id)
-                        message_id = int(task['message_id'])
+                            except Exception: pass
                         
-                        messages = await tg_clients.user_client.get_messages(entity, ids=[message_id])
-                        if messages and messages[0] and messages[0].media:
-                            # --- 优化：检查本地文件是否已存在且大小匹配 ---
-                            expected_size = task.get('file_size') or 0
-                            if os.path.exists(save_path) and expected_size > 0:
-                                actual_size = os.path.getsize(save_path)
-                                if actual_size == expected_size:
-                                    logger.info(f"本地文件已存在且完整，跳过下载直接进入转发阶段: {task['file_name']}")
-                                    downloaded_success = True
-                                else:
-                                    logger.info(f"本地文件大小不匹配 ({actual_size} != {expected_size})，重新下载: {task['file_name']}")
-                            
-                            if not downloaded_success:
-                                await download_engine.download_via_telethon(
-                                    tg_clients.user_client, 
-                                    messages[0], 
-                                    save_path,
-                                    self.create_progress_callback(task_id)
-                                )
-                                downloaded_success = True
-                        else:
-                            raise Exception(f"在实体 {peer_id} 中找不到消息 {message_id} 或消息不包含媒体")
-                            
+                        if not entity:
+                            entity = await tg_clients.user_client.get_input_entity(int(peer_id_str))
+                        
+                        message_id = int(task['message_id'])
+                        msgs = await tg_clients.user_client.get_messages(entity, ids=[message_id])
+                        if msgs and msgs[0] and msgs[0].media:
+                            download_client = tg_clients.user_client
+                            message_obj = msgs[0]
                     except FloodWaitError as e:
                         logger.warning(f"触发 Telegram 限速，需要等待 {e.seconds} 秒: {task['file_name']}")
                         await db_manager.update_task_status(task_id, 'pending', f"限速等待: {e.seconds}s")
                         await asyncio.sleep(e.seconds + 1)
-                        # 重新放入队列头部优先重试
                         await self.queue.put(task)
                         continue
-                        
                     except Exception as e:
-                        # 检查是否是由于 Flood 导致的通用错误（有时 Telethon 不会封装成 FloodWaitError）
+                        # 检查是否是由于 Flood 导致的通用错误
                         if "FLOOD_PREMIUM_WAIT" in str(e) or "FLOOD_WAIT" in str(e):
                             import re
-                            wait_seconds = 30 # 默认等待
+                            wait_seconds = 30 
                             match = re.search(r'WAIT_(\d+)', str(e))
-                            if match:
-                                wait_seconds = int(match.group(1))
-                            
+                            if match: wait_seconds = int(match.group(1))
                             logger.warning(f"检测到限速错误字符串，等待 {wait_seconds} 秒: {e}")
                             await db_manager.update_task_status(task_id, 'pending', f"限速等待: {wait_seconds}s")
                             await asyncio.sleep(wait_seconds + 1)
                             await self.queue.put(task)
                             continue
-                        
-                        logger.error(f"MTProto 下载失败: {e}")
-                        raise e
+                        logger.debug(f"User Client 无法获取消息，准备尝试 Bot Client: {e}")
+
+                # 2. 如果 User Client 失败或不可用，尝试使用 Bot Client (处理私聊 Bot 的消息)
+                if not message_obj and tg_clients.bot_client:
+                    try:
+                        peer_id = int(task.get('chat_id') or 0)
+                        message_id = int(task['message_id'])
+                        msgs = await tg_clients.bot_client.get_messages(peer_id, ids=[message_id])
+                        if msgs and msgs[0] and msgs[0].media:
+                            download_client = tg_clients.bot_client
+                            message_obj = msgs[0]
+                            logger.info(f"使用 Bot Client 协助下载消息: {task['file_name']}")
+                    except Exception as e:
+                        logger.error(f"Bot Client 也无法获取消息: {e}")
+
+                # 3. 执行执行下载
+                if download_client and message_obj:
+                    # --- 优化：检查本地文件是否已存在且大小匹配 ---
+                    expected_size = task.get('file_size') or 0
+                    if os.path.exists(save_path) and expected_size > 0:
+                        actual_size = os.path.getsize(save_path)
+                        if actual_size == expected_size:
+                            logger.info(f"本地文件已存在且完整，跳过下载直接进入转发阶段: {task['file_name']}")
+                            downloaded_success = True
+                    
+                    if not downloaded_success:
+                        await download_engine.download_via_telethon(
+                            download_client, 
+                            message_obj, 
+                            save_path,
+                            self.create_progress_callback(task_id)
+                        )
+                        downloaded_success = True
                 else:
-                    raise Exception("用户客户端尚未授权，请通过 Bot 发送 /login 登录")
+                    raise Exception("无法通过任何客户端获取到该媒体消息（可能已被删除或无权限访问）")
 
                 if downloaded_success:
                     # sanity check: 文件存在且非空
