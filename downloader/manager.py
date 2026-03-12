@@ -236,7 +236,7 @@ class DownloadManager:
                     requester = task_data.get('requester_chat_id') or task.get('chat_id')
                     try:
                         if requester and tg_clients.bot_client:
-                            msg = f"✅ 任务已成功归档: `{task['file_name']}`"
+                            msg = f"✅ 任务已成功处理: `{task['file_name']}`"
                             if forward_target:
                                 msg += f"\n📤 已转发至: `{forward_target}`"
                             
