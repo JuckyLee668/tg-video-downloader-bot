@@ -103,13 +103,24 @@ class DownloadManager:
                         
                         messages = await tg_clients.user_client.get_messages(entity, ids=[message_id])
                         if messages and messages[0] and messages[0].media:
-                            await download_engine.download_via_telethon(
-                                tg_clients.user_client, 
-                                messages[0], 
-                                save_path,
-                                self.create_progress_callback(task_id)
-                            )
-                            downloaded_success = True
+                            # --- 优化：检查本地文件是否已存在且大小匹配 ---
+                            expected_size = task.get('file_size') or 0
+                            if os.path.exists(save_path) and expected_size > 0:
+                                actual_size = os.path.getsize(save_path)
+                                if actual_size == expected_size:
+                                    logger.info(f"本地文件已存在且完整，跳过下载直接进入转发阶段: {task['file_name']}")
+                                    downloaded_success = True
+                                else:
+                                    logger.info(f"本地文件大小不匹配 ({actual_size} != {expected_size})，重新下载: {task['file_name']}")
+                            
+                            if not downloaded_success:
+                                await download_engine.download_via_telethon(
+                                    tg_clients.user_client, 
+                                    messages[0], 
+                                    save_path,
+                                    self.create_progress_callback(task_id)
+                                )
+                                downloaded_success = True
                         else:
                             raise Exception(f"在实体 {peer_id} 中找不到消息 {message_id} 或消息不包含媒体")
                             
