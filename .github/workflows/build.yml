@@ -50,7 +50,13 @@ jobs:
             --noconfirm \
             --clean \
             --onedir \
+            --paths . \
             --name tg-video-downloader \
+            --collect-submodules core \
+            --collect-submodules downloader \
+            --collect-submodules telegram \
+            --collect-submodules web \
+            --collect-submodules utils \
             --add-data "public${{ matrix.pyinstaller_data_sep }}public" \
             --add-data ".env.example${{ matrix.pyinstaller_data_sep }}." \
             main.py
