@@ -35,10 +35,13 @@ Write-Host ">>> Installing dependencies..." -ForegroundColor Green
 $CONFIG_FILE = Join-Path $SCRIPT_DIR "config.yaml"
 if (!(Test-Path $CONFIG_FILE)) {
 
-    $EXAMPLE = Join-Path $SCRIPT_DIR "config.yaml.example"
+    $EXAMPLE = Join-Path $SCRIPT_DIR "config.example.yaml"
+    if (!(Test-Path $EXAMPLE)) {
+        $EXAMPLE = Join-Path $SCRIPT_DIR "config.yaml.example"
+    }
 
     if (Test-Path $EXAMPLE) {
-        Write-Host ">>> Copying config.yaml.example..." -ForegroundColor Yellow
+        Write-Host ">>> Copying example config..." -ForegroundColor Yellow
         Copy-Item $EXAMPLE $CONFIG_FILE
     }
     else {

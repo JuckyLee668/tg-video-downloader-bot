@@ -111,6 +111,9 @@ user_api:
 ### 工作流文件
 工作流位于 `.github/workflows/build.yml`，使用 `pyinstaller --onedir` 构建。之所以采用 `--onedir`，是因为这个项目在运行时还要读写 `config.yaml`、`session.txt`、SQLite 数据库和下载目录，目录模式更稳定。
 
+### 原来的启动方式还能不能用？
+可以，原来的源码运行方式没有变，仍然可以继续使用 `python main.py`、`start.sh` 或 `start.ps1` 启动；这次改动主要是补充了打包构建，并把运行时文件路径改成了更稳定的“相对于程序目录”解析方式。
+
 ## 常见问题
 1) **网页打不开 /502**  
    - 确认 `python main.py` 正在运行且监听 `127.0.0.1:8000`。  

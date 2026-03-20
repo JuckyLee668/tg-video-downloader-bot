@@ -29,10 +29,15 @@ echo -e "${GREEN}>>> 正在同步依赖库...${NC}"
 pip install --upgrade pip -q
 pip install -r "$ROOT_DIR/requirements.txt" -q
 
-# 4) Check config.yaml in root
+# 4) Check/create config.yaml in root
 if [ ! -f "$ROOT_DIR/config.yaml" ]; then
-    echo -e "${RED}错误: 找不到 config.yaml，请放在项目根目录。${NC}"
-    exit 1
+    if [ -f "$ROOT_DIR/config.example.yaml" ]; then
+        echo -e "${GREEN}>>> 未找到 config.yaml，正在从 config.example.yaml 复制...${NC}"
+        cp "$ROOT_DIR/config.example.yaml" "$ROOT_DIR/config.yaml"
+    else
+        echo -e "${RED}错误: 找不到 config.yaml，请放在项目根目录。${NC}"
+        exit 1
+    fi
 fi
 
 # 5) Ensure .env in root (copy from .env.example if present)
