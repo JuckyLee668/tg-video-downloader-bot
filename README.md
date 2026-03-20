@@ -9,33 +9,42 @@
 - 账号双客户端：Bot 客户端 + 用户（MTProto）客户端，分离权限更安全。
 - 代理支持：可为全局或用户客户端配置 HTTP / SOCKS5 代理（默认关闭）。
 
+## 使用方法
+- 直接转发视频或其他文件到Bot后会自动下载。
+- 可以在Bot内使用命令连接群组并选择下载或转发（如果不能直接转发会下载并转发，要注意非Premium只能转发大小为2GB内文件）。
+- 可以在Web 控制台：`http://127.0.0.1:8000`连接群组然后下载或下载并转发。
+
 ## 环境要求
 - Python 3.8+
 - 可访问 Telegram 的网络（如需代理可在配置中开启）
 
 ## 安装与启动
+###  1）先配置.env（必填）
+复制 `.env.example` 为 `.env` 并填入：
+BOT_TOKEN、API_ID 和 API_HASH （获取方法可以查看下文的常见问题的第4、5条）
+```
+BOT_TOKEN=你的BotToken
+USER_API_ID=你的UserApiId
+USER_API_HASH=你的UserApiHash
+```
+### 2）使用一键启动脚本（该脚本会检查配置文件、创建虚拟环境、安装依赖后启动）
+#### Linux
 ```bash
 git clone https://github.com/your-repo/tg-video-downloader-bot.git
 cd tg-video-downloader-bot
-python -m venv venv
-.\venv\Scripts\activate   # Linux/macOS 用 source venv/bin/activate
-pip install -r requirements.txt
-python main.py
+chmod +x start.sh 
+./start.sh
+```
+#### windows
+```
+ .\start.ps1
 ```
 启动成功后：
 - Web 控制台：`http://127.0.0.1:8000`
 - Bot 会自动上线（使用你提供的 Bot Token）。
 
 ## 配置
-### 1) .env（必填）
-复制 `.env.example` 为 `.env` 并填入：
-```
-BOT_TOKEN=你的BotToken
-USER_API_ID=你的UserApiId
-USER_API_HASH=你的UserApiHash
-```
-
-### 2) config.yaml（可选）
+### 1) config.yaml（可选）
 - 下载路径、并发、文件命名等常规项已默认配置。
 - **代理默认关闭**：
 ```yaml
@@ -89,13 +98,14 @@ user_api:
    - 在 `config.yaml` 或 Web 里填好代理参数，保存后重启。
 3) **登录失败**  
    - 确保 `.env` 中 USER_API_ID / HASH 正确；在 Telegram 与 Bot 对话中使用 `/login` 按提示输入验证码。
-
-## 目录结构速览
-- `core/` 配置与数据库
-- `telegram/` Bot & 用户客户端、命令、搜索
-- `downloader/` 下载管理队列
-- `web/` FastAPI 路由与前端资源
-- `public/` Web 前端静态文件
+4) **获取BOT_TOKEN（ 使用Telegram客户端申请）**
+   - 添加好友 @BotFather。
+   - 输入【 /start 】 -【 /newbot 】，给新机器人自定义起名，必须以bot结尾，不能和别人重复。
+   - 起名新建成功后会输出Use this token to access the HTTP API，就是你这个机器人的Token。
+5) **获取API_ID和API_HASH（通过官方方式申请）**
+   - 访问申请页面:打开浏览器进入 `my.telegram.org`,后使用你的 Telegram 账号登录。
+   - 创建应用：登录后选择 API development tools。填写 App title、Short name、平台类型等信息。点击 Create application 提交。
+   - 获取凭证：创建成功后，页面会显示 API ID 和 API Hash。
 
 ## 免责声明
 本项目仅供学习与个人备份使用，请遵守 Telegram 服务条款与所在地法律法规。
