@@ -87,7 +87,7 @@ user_api:
 
 ### 触发方式
 - 手动：GitHub → **Actions** → **Build desktop binaries** → **Run workflow**
-- 自动：推送 `v*` 标签时自动构建，例如 `v1.0.0`
+- 自动：推送 `v*` 标签时自动构建，例如 `v1.0.0`；标签构建完成后会把压缩包同时挂到对应 GitHub Release 下面
 
 ### 产物说明
 - `tg-video-downloader-windows.zip`
@@ -100,11 +100,12 @@ user_api:
 - `config.yaml`（由 `config.example.yaml` 复制而来）
 
 ### 使用步骤
-1. 下载对应系统的 Actions artifact。
-2. 解压后，把 `.env.example` 复制为 `.env`。
-3. 在 `.env` 中填写 `BOT_TOKEN`、`USER_API_ID`、`USER_API_HASH`。
-4. 按需修改 `config.yaml`。
-5. 运行：
+1. 如果是手动运行 workflow，就到 Actions 页面下载 artifact。
+2. 如果是推送 `v*` 标签触发，就可以直接到对应 GitHub Release 下载附件。
+3. 解压后，把 `.env.example` 复制为 `.env`。
+4. 在 `.env` 中填写 `BOT_TOKEN`、`USER_API_ID`、`USER_API_HASH`。
+5. 按需修改 `config.yaml`。
+6. 运行：
    - Windows：双击 `tg-video-downloader.exe`
    - Linux：`chmod +x tg-video-downloader && ./tg-video-downloader`
 
