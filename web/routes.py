@@ -15,6 +15,7 @@ from web.api_models import (
     HistoryDeleteRequest
 )
 from core.config import config, ProxyConfig
+from utils.runtime_paths import app_path
 
 router = APIRouter()
 
@@ -229,7 +230,7 @@ async def get_me():
         avatar_url = None
         try:
             # 确保目录存在
-            avatar_dir = os.path.join("public", "avatars")
+            avatar_dir = str(app_path("public", "avatars"))
             os.makedirs(avatar_dir, exist_ok=True)
             avatar_path = os.path.join(avatar_dir, f"user_{me.id}.jpg")
             

@@ -1,0 +1,33 @@
+adaptive_concurrency: true
+allowed_user_ids:
+  - me
+always_fresh_download: false
+batch_interval: 500
+batch_size: 20
+bot_token: ""
+chat: []
+date_format: "%Y_%m"
+enable_private_chat: true
+file_formats: {}
+file_name_prefix:
+  - message_id
+  - file_name
+file_name_prefix_split: " - "
+file_path_prefix:
+  - chat_title
+group_same_channel_files: true
+max_connected_channels: 10
+max_download_task: 3
+media_types:
+  - audio
+  - document
+  - photo
+  - video
+  - voice
+  - animation
+proxy: null
+save_path: ./downloads
+user_api:
+  api_hash: ""
+  api_id: ""
+  proxy: null

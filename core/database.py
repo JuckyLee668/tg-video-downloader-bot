@@ -1,6 +1,7 @@
 import aiosqlite
 import os
 import json
+from utils.runtime_paths import app_path
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from core.config import config
@@ -8,7 +9,7 @@ from loguru import logger
 
 class DatabaseManager:
     def __init__(self, db_path: str = "data/telegram_downloader.db"):
-        self.db_path = db_path
+        self.db_path = str(app_path(db_path)) if not os.path.isabs(db_path) else db_path
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
 
     async def init(self):

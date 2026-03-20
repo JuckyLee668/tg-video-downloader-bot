@@ -1,11 +1,13 @@
 import os
+from pathlib import Path
 import yaml
 from typing import List, Optional, Dict
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from loguru import logger
+from utils.runtime_paths import app_path
 
-load_dotenv(override=True)
+load_dotenv(dotenv_path=app_path(".env"), override=True)
 
 class ProxyConfig(BaseModel):
     scheme: str = "http"
@@ -24,6 +26,13 @@ class UserApiConfig(BaseModel):
     api_id: Optional[str] = None
     api_hash: Optional[str] = None
     proxy: Optional[ProxyConfig] = None
+
+def _normalize_runtime_path(path_str: str) -> str:
+    path = Path(path_str)
+    if path.is_absolute():
+        return str(path)
+    return str(app_path(path_str))
+
 
 class Config(BaseModel):
     bot_token: str = Field(default="")
@@ -48,10 +57,12 @@ class Config(BaseModel):
     date_format: str = Field(default="%Y_%m")
 
     def save(self, config_path: str = "config.yaml"):
-        # We need to be careful with .local override, but usually we save to the original if possible
-        if os.path.exists("config.local.yaml"):
-            config_path = "config.local.yaml"
-            
+        local_config_path = app_path("config.local.yaml")
+        if local_config_path.exists():
+            config_path = str(local_config_path)
+        else:
+            config_path = str(app_path(config_path))
+
         data = self.model_dump(mode='json')
         
         # Don't save things that should stay in environment
@@ -62,11 +73,15 @@ class Config(BaseModel):
         logger.info(f"配置已保存到 {config_path}")
 
 def load_config(config_path: str = "config.yaml") -> Config:
-    if os.path.exists("config.local.yaml"):
-        config_path = "config.local.yaml"
-    
-    with open(config_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+    local_config_path = app_path("config.local.yaml")
+    default_config_path = app_path(config_path)
+    resolved_config_path = local_config_path if local_config_path.exists() else default_config_path
+
+    if resolved_config_path.exists():
+        with open(resolved_config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    else:
+        data = {}
     
     # Override with environment variables
     if os.getenv("BOT_TOKEN"):
@@ -81,7 +96,9 @@ def load_config(config_path: str = "config.yaml") -> Config:
     if os.getenv("USER_API_HASH"):
         data["user_api"]["api_hash"] = os.getenv("USER_API_HASH")
 
-    return Config(**data)
+    config = Config(**data)
+    config.save_path = _normalize_runtime_path(config.save_path)
+    return config
 
 # Singleton instance
 config = load_config()

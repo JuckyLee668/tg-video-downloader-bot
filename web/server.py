@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from web.routes import router as api_router
-import os
+from utils.runtime_paths import bundle_path
 
 def create_app():
     app = FastAPI(title="TG Media Downloader Dashboard")
@@ -20,7 +20,8 @@ def create_app():
     
     # Static files (the existing dashboard.html)
     # Check if public directory exists
-    if os.path.exists("public"):
-        app.mount("/", StaticFiles(directory="public", html=True), name="static")
+    public_dir = bundle_path("public")
+    if public_dir.exists():
+        app.mount("/", StaticFiles(directory=str(public_dir), html=True), name="static")
     
     return app
