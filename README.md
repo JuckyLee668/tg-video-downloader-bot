@@ -81,6 +81,36 @@ user_api:
 - 地址：`http://127.0.0.1:8000`
 - Tab “Settings & Proxy” 可配置并保存代理（默认关闭）。保存后需重启以完全作用于 Telegram 客户端。
 
+
+## GitHub Actions 打包 Windows / Linux 可执行文件
+可以直接用 PyInstaller 在 GitHub Actions 里生成 Windows `.exe` 和 Linux 可执行目录。仓库里已经有统一入口 `main.py`，并且 Web 静态资源依赖 `public/` 目录，所以打包时需要把这些资源一起带上。
+
+### 触发方式
+- 手动：GitHub → **Actions** → **Build desktop binaries** → **Run workflow**
+- 自动：推送 `v*` 标签时自动构建，例如 `v1.0.0`
+
+### 产物说明
+- `tg-video-downloader-windows.zip`
+- `tg-video-downloader-linux.tar.gz`
+
+解压后目录内会包含：
+- 可执行程序
+- `public/` 静态页面资源
+- `.env.example`
+- `config.yaml`（由 `config.example.yaml` 复制而来）
+
+### 使用步骤
+1. 下载对应系统的 Actions artifact。
+2. 解压后，把 `.env.example` 复制为 `.env`。
+3. 在 `.env` 中填写 `BOT_TOKEN`、`USER_API_ID`、`USER_API_HASH`。
+4. 按需修改 `config.yaml`。
+5. 运行：
+   - Windows：双击 `tg-video-downloader.exe`
+   - Linux：`chmod +x tg-video-downloader && ./tg-video-downloader`
+
+### 工作流文件
+工作流位于 `.github/workflows/build.yml`，使用 `pyinstaller --onedir` 构建。之所以采用 `--onedir`，是因为这个项目在运行时还要读写 `config.yaml`、`session.txt`、SQLite 数据库和下载目录，目录模式更稳定。
+
 ## 常见问题
 1) **网页打不开 /502**  
    - 确认 `python main.py` 正在运行且监听 `127.0.0.1:8000`。  

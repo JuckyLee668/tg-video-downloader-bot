@@ -5,6 +5,7 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 from core.config import config, ProxyConfig
 from loguru import logger
+from utils.runtime_paths import app_path
 
 from telegram.search import init_searcher
 
@@ -45,7 +46,7 @@ class TelegramClientWrapper:
     def __init__(self):
         self.bot_client: Optional[TelegramClient] = None
         self.user_client: Optional[TelegramClient] = None
-        self.session_file = "session.txt"
+        self.session_file = str(app_path("session.txt"))
         self.phone = None
         self.phone_code_hash = None
         

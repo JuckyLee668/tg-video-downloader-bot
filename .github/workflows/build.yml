@@ -1,0 +1,77 @@
+name: Build desktop binaries
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: tg-video-downloader-linux
+            executable_name: tg-video-downloader
+            archive_ext: tar.gz
+            pyinstaller_data_sep: ':'
+          - os: windows-latest
+            artifact_name: tg-video-downloader-windows
+            executable_name: tg-video-downloader.exe
+            archive_ext: zip
+            pyinstaller_data_sep: ';'
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build binary
+        shell: bash
+        run: |
+          pyinstaller \
+            --noconfirm \
+            --clean \
+            --onedir \
+            --name tg-video-downloader \
+            --add-data "public${{ matrix.pyinstaller_data_sep }}public" \
+            --add-data ".env.example${{ matrix.pyinstaller_data_sep }}." \
+            main.py
+
+      - name: Add runtime files (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cp config.example.yaml dist/tg-video-downloader/config.yaml
+          cp .env.example dist/tg-video-downloader/.env.example
+          tar -czf ${{ matrix.artifact_name }}.${{ matrix.archive_ext }} -C dist tg-video-downloader
+
+      - name: Add runtime files (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item config.example.yaml dist/tg-video-downloader/config.yaml
+          Copy-Item .env.example dist/tg-video-downloader/.env.example
+          Compress-Archive -Path dist/tg-video-downloader/* -DestinationPath ${{ matrix.artifact_name }}.${{ matrix.archive_ext }} -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}.${{ matrix.archive_ext }}
