@@ -31,7 +31,14 @@ async def main():
     
     # 5. Start Web Server
     app = create_app()
-    server_config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
+    web_api_key = (os.getenv("WEB_API_KEY") or "").strip()
+    web_host = "0.0.0.0" if web_api_key else "127.0.0.1"
+    if web_api_key:
+        logger.warning("Detected WEB_API_KEY, Web server will listen on 0.0.0.0 (external access enabled).")
+    else:
+        logger.info("WEB_API_KEY not set, Web server will listen on 127.0.0.1 (local only).")
+
+    server_config = uvicorn.Config(app, host=web_host, port=8000, log_level="info")
     server = uvicorn.Server(server_config)
     
     # Run everything

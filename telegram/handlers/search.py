@@ -32,7 +32,7 @@ async def search_keyword_handler(event, arg=None):
         if len(messages) > 20:
             response += f"\n... 以及另外 {len(messages)-20} 条消息。"
         
-        response += "\n\n💡 发送 `/bd` 即可全部下载，或`/bdf`下载指定格式文件，或 `/bf` `目标ID` 转发。"
+        response += "\n\n💡 用法：/bd [序号范围] 下载（默认全部）；/bdf 格式 [序号范围] 按格式下载（默认全部）；/bf 目标ID [序号范围] 转发（默认全部）。"
         await event.respond(response)
     except Exception as e:
         await event.respond(f"❌ 搜索出错: {str(e)}")

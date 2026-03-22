@@ -1,4 +1,5 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends, Header
+import asyncio
 import aiosqlite
 from core.database import db_manager
 from downloader.manager import download_manager
@@ -15,15 +16,50 @@ from web.api_models import (
     HistoryDeleteRequest
 )
 from core.config import config, ProxyConfig
+import os
 
-router = APIRouter()
+WEB_API_FAIL_COUNT = 0
+WEB_API_LOCKED = False
+
+
+def _mask_secret(value: str, keep: int = 4) -> str:
+    if not value:
+        return ""
+    if len(value) <= keep * 2:
+        return "*" * len(value)
+    return f"{value[:keep]}{'*' * (len(value) - keep * 2)}{value[-keep:]}"
+
+
+async def require_api_key(x_api_key: str | None = Header(default=None)):
+    global WEB_API_FAIL_COUNT, WEB_API_LOCKED
+    expected = (os.getenv("WEB_API_KEY") or "").strip()
+    if not expected:
+        return
+    if WEB_API_LOCKED:
+        raise HTTPException(status_code=423, detail="WEB_API_KEY 已锁定，请重启程序后重试。")
+
+    provided = (x_api_key or "").strip()
+    if not provided:
+        raise HTTPException(status_code=401, detail="未提供 WEB_API_KEY")
+
+    if provided != expected:
+        WEB_API_FAIL_COUNT += 1
+        if WEB_API_FAIL_COUNT >= 3:
+            WEB_API_LOCKED = True
+            raise HTTPException(status_code=401, detail="WEB_API_KEY 连续 3 次错误，已锁定，请重启程序后重试。")
+        raise HTTPException(status_code=401, detail=f"WEB_API_KEY 错误（{WEB_API_FAIL_COUNT}/3）")
+
+    WEB_API_FAIL_COUNT = 0
+
+
+router = APIRouter(dependencies=[Depends(require_api_key)])
 
 @router.get("/config")
 async def get_config():
     return {
-        "bot_token": config.bot_token,
+        "bot_token": _mask_secret(config.bot_token),
         "user_api_id": config.user_api.api_id,
-        "user_api_hash": config.user_api.api_hash,
+        "user_api_hash": _mask_secret(config.user_api.api_hash or ""),
         "proxy": config.proxy.model_dump() if config.proxy else None,
         "save_path": config.save_path,
         "max_download_task": config.max_download_task,
@@ -265,15 +301,33 @@ def serialize_message(msg):
     file_size = 0
     
     if msg.media:
-        if msg.video:
-            media_type = "video"
-        elif msg.photo:
+        file_obj = getattr(msg, "file", None)
+        doc_obj = getattr(msg, "document", None)
+        mime_type = (getattr(file_obj, "mime_type", "") or getattr(doc_obj, "mime_type", "") or "").lower()
+        file_name_lc = (getattr(file_obj, "name", "") or "").lower()
+        doc_attrs = getattr(doc_obj, "attributes", None) or []
+        has_video_attr = any(a.__class__.__name__ == "DocumentAttributeVideo" for a in doc_attrs)
+        is_round_video_attr = any(
+            a.__class__.__name__ == "DocumentAttributeVideo" and bool(getattr(a, "round_message", False))
+            for a in doc_attrs
+        )
+
+        is_round_video = bool(msg.video_note) or is_round_video_attr
+        is_animation_like = bool(msg.gif) or mime_type == "image/gif"
+        is_photo_like = bool(msg.photo) or (mime_type.startswith("image/") and not is_animation_like) or file_name_lc.endswith((".jpg", ".jpeg", ".png", ".webp"))
+        is_video_like = bool(msg.video) or mime_type.startswith("video/") or has_video_attr or file_name_lc.endswith((".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"))
+        is_audio_like = bool(msg.audio) or mime_type.startswith("audio/")
+        is_voice_like = bool(msg.voice)
+
+        if is_photo_like:
             media_type = "photo"
-        elif msg.voice:
+        elif is_video_like and not is_round_video and not is_animation_like:
+            media_type = "video"
+        elif is_voice_like:
             media_type = "voice"
-        elif msg.audio:
+        elif is_audio_like and not is_voice_like:
             media_type = "audio"
-        elif msg.gif or msg.video_note:
+        elif is_animation_like:
             media_type = "animation"
         elif msg.document:
             media_type = "document"
@@ -299,17 +353,47 @@ async def get_dialogs():
 
 @router.post("/messages/forward")
 async def forward_messages(req: ForwardRequest):
-    searcher = await get_searcher()
     try:
-        # We need to ensure the IDs are correct
-        # to_chat_id could be a string like '-100...' or a username
-        to_peer = req.to_chat_id
-        if to_peer.replace('-', '').isdigit():
-            to_peer = int(to_peer)
-            
+        if not tg_clients.user_client or not await tg_clients.user_client.is_user_authorized():
+            raise HTTPException(status_code=401, detail="User client not logged in")
+
         from_peer = int(req.from_channel_id)
-        
-        await searcher.forward_messages(from_peer, req.message_ids, to_peer)
-        return {"status": "success"}
+        messages = await tg_clients.user_client.get_messages(from_peer, ids=req.message_ids)
+        if not messages:
+            raise HTTPException(status_code=404, detail="No messages found")
+
+        queued = 0
+        for msg in messages:
+            if not msg or not msg.media:
+                continue
+
+            if msg.file and msg.file.name:
+                file_name = msg.file.name
+            else:
+                mime = getattr(msg.file, "mime_type", "") if msg.file else ""
+                ext = ".mp4" if "video" in mime else ".mp3" if "audio" in mime else ".jpg" if "image" in mime else ""
+                file_name = f"media_{msg.id}{ext}"
+
+            task = {
+                "chat_id": str(msg.chat_id),
+                "message_id": str(msg.id),
+                "file_name": file_name,
+                "media_type": msg.media.__class__.__name__ if msg.media else "unknown",
+                "file_size": msg.file.size if msg.file else 0,
+                "channel_id": str(msg.chat_id),
+                "channel_username": getattr(msg.chat, "username", "") if msg.chat else "",
+                "channel_title": getattr(msg.chat, "title", "") if msg.chat else "",
+                "task_data": {
+                    "original_file_name": file_name,
+                    "forward_target": str(req.to_chat_id),
+                    "delete_after_forward": False,
+                    "caption": msg.message or "",
+                    "access_hash": getattr(msg.chat, "access_hash", None),
+                },
+            }
+            await download_manager.add_task(task)
+            queued += 1
+
+        return {"status": "queued", "count": queued}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

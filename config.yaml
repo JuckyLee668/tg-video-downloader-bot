@@ -4,7 +4,7 @@ allowed_user_ids:
 always_fresh_download: false
 batch_interval: 500
 batch_size: 20
-bot_token: 8479400961:AAHKK-Ke9HO4sXrIM-MuiRyYX75emIuu7os
+bot_token: ''
 chat: []
 date_format: '%Y_%m'
 enable_private_chat: true
@@ -28,6 +28,6 @@ media_types:
 proxy: null
 save_path: ./downloads
 user_api:
-  api_hash: db62a098851588b5fd97bbee6ddd1536
-  api_id: '30578955'
+  api_hash: ''
+  api_id: ''
   proxy: null

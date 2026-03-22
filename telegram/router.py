@@ -48,6 +48,64 @@ ALIAS_MAP = {
     "batch_forward": "bf",
 }
 
+_owner_user_id_cache = None
+
+
+async def _get_owner_user_id():
+    global _owner_user_id_cache
+    if _owner_user_id_cache:
+        return _owner_user_id_cache
+
+    if tg_clients.user_client and await tg_clients.user_client.is_user_authorized():
+        me = await tg_clients.user_client.get_me()
+        if me and getattr(me, "id", None):
+            _owner_user_id_cache = str(me.id)
+            return _owner_user_id_cache
+    return None
+
+
+async def _is_authorized_event(event) -> bool:
+    allowed = config.allowed_user_ids or []
+    if not allowed:
+        return True
+
+    normalized = {str(item).strip().lower() for item in allowed if str(item).strip()}
+    sender_id = str(getattr(event, "sender_id", None) or getattr(event, "chat_id", ""))
+
+    if sender_id and sender_id in normalized:
+        return True
+
+    try:
+        sender = await event.get_sender()
+        username = (getattr(sender, "username", None) or "").lower()
+        if username and (username in normalized or f"@{username}" in normalized):
+            return True
+    except Exception:
+        pass
+
+    if "me" in normalized:
+        owner_id = await _get_owner_user_id()
+        if owner_id and sender_id == owner_id:
+            return True
+
+    return False
+
+
+async def _ensure_authorized_or_reply(event) -> bool:
+    if await _is_authorized_event(event):
+        return True
+
+    logger.warning(
+        "Blocked unauthorized request: sender_id={} chat_id={}",
+        getattr(event, "sender_id", None),
+        getattr(event, "chat_id", None),
+    )
+    try:
+        await event.respond("❌ 你没有权限使用这个机器人。")
+    except Exception:
+        pass
+    return False
+
 async def command_router(event):
     """
     统一命令路由入口
@@ -60,6 +118,9 @@ async def command_router(event):
     match = re.match(r'^/(\w+)(?: +(.+))?$', text)
     if not match:
         return
+
+    if not await _ensure_authorized_or_reply(event):
+        raise events.StopPropagation
 
     cmd = match.group(1).lower()
     arg = match.group(2)
@@ -92,6 +153,9 @@ async def state_handler(event):
     state = state_manager.get(event.chat_id)
     if not state:
         return
+
+    if not await _ensure_authorized_or_reply(event):
+        raise events.StopPropagation
 
     cmd = state.get('command')
     step = state.get('step')
@@ -178,6 +242,9 @@ async def media_auto_handler(event):
     if event.message.text and event.message.text.startswith('/'):
         return
     if not event.message.media:
+        return
+
+    if not await _ensure_authorized_or_reply(event):
         return
 
     # ... 这里保留你原来的 media_handler 逻辑，但调用 download_manager ...

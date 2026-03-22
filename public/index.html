@@ -235,14 +235,65 @@
 
     <script>
         let currentResults = [];
+        let appStarted = false;
+        let webApiKey = '';
+        let keyPromptInProgress = false;
+
+        function loadApiKeyFromStorage() {
+            webApiKey = localStorage.getItem('WEB_API_KEY') || '';
+        }
+
+        function promptForApiKey(force = false) {
+            if (keyPromptInProgress) return false;
+            if (!force && webApiKey) return true;
+            keyPromptInProgress = true;
+            const input = prompt('请输入 WEB_API_KEY：', webApiKey || '');
+            keyPromptInProgress = false;
+            const key = (input || '').trim();
+            if (!key) {
+                alert('未输入 WEB_API_KEY，系统已拒绝继续。请重启程序后重试。');
+                return;
+            }
+            localStorage.setItem('WEB_API_KEY', key);
+            webApiKey = key;
+            return true;
+        }
 
         async function fetchApi(path, options = {}) {
             try {
+                const headers = { 'Content-Type': 'application/json', ...options.headers };
+                if (webApiKey) headers['X-API-Key'] = webApiKey;
+
                 const res = await fetch('/api' + path, {
                     ...options,
-                    headers: { 'Content-Type': 'application/json', ...options.headers }
+                    headers
                 });
                 const data = await res.json();
+                if (res.status === 401) {
+                    const detail = data.detail || '';
+                    if (detail.includes('已锁定')) {
+                        localStorage.removeItem('WEB_API_KEY');
+                        webApiKey = '';
+                        throw new Error(detail);
+                    }
+
+                    const ok = promptForApiKey(true);
+                    if (!ok) throw new Error('未输入 WEB_API_KEY，请重启程序后重试。');
+
+                    const retryHeaders = { 'Content-Type': 'application/json', ...options.headers, 'X-API-Key': webApiKey };
+                    const retryRes = await fetch('/api' + path, {
+                        ...options,
+                        headers: retryHeaders
+                    });
+                    const retryData = await retryRes.json();
+                    if (!retryRes.ok) throw new Error(retryData.detail || 'API Error');
+                    return retryData;
+                }
+                if (res.status === 423) {
+                    localStorage.removeItem('WEB_API_KEY');
+                    webApiKey = '';
+                    throw new Error(data.detail || 'WEB_API_KEY 已锁定，请重启程序后重试。');
+                }
                 if (!res.ok) throw new Error(data.detail || 'API Error');
                 return data;
             } catch (err) {
@@ -436,7 +487,7 @@
             
             let total = 0;
             for (const fromChatId in byChat) {
-                await fetchApi('/messages/forward', {
+                const res = await fetchApi('/messages/forward', {
                     method: 'POST',
                     body: JSON.stringify({
                         from_channel_id: fromChatId,
@@ -444,10 +495,11 @@
                         to_chat_id: toChatId
                     })
                 });
-                total += byChat[fromChatId].length;
+                total += Number(res.count || 0);
             }
             
-            alert(`Successfully forwarded ${total} messages`);
+            alert(`已将 ${total} 条消息加入转发队列`);
+            updateStats();
         }
 
         function toggleAll(cb) {
@@ -592,11 +644,19 @@
             await checkLoginStatus();
         }
 
+        function startApp() {
+            if (appStarted) return;
+            if (!promptForApiKey()) return;
+            appStarted = true;
+            checkLoginStatus();
+            updateStats();
+            loadChannels();
+            setInterval(updateStats, 5000);
+        }
+
         // Init
-        checkLoginStatus();
-        updateStats();
-        loadChannels();
-        setInterval(updateStats, 5000);
+        loadApiKeyFromStorage();
+        startApp();
     </script>
 </body>
 </html>
