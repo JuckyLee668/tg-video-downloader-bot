@@ -56,13 +56,14 @@ allowed_user_ids: []
 allowed_user_ids:
   - me
 ```
+   - 说明：`me` 表示“当前已登录的 user client 账号”。若首次使用，请先在 Bot 私聊里执行 `/login` 完成初始化。
   - **模式 C：仅允许指定账号（推荐多人协作）**
 ```yaml
 allowed_user_ids:
   - "123456789"
   - "@alice"
 ```
-  - 说明：`me` 表示“当前已登录的 user client 账号”。若首次使用，请先在 Bot 私聊里执行 `/login` 完成初始化。
+
 - **代理默认关闭**：
 ```yaml
 proxy: null
