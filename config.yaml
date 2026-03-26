@@ -1,6 +1,5 @@
 adaptive_concurrency: true
-allowed_user_ids:
-- me
+allowed_user_ids: []
 always_fresh_download: false
 batch_interval: 500
 batch_size: 20

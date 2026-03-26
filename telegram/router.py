@@ -91,8 +91,36 @@ async def _is_authorized_event(event) -> bool:
     return False
 
 
-async def _ensure_authorized_or_reply(event) -> bool:
+async def _allow_login_bootstrap(event) -> bool:
+    """
+    Prevent deadlock when allowlist contains only `me` but owner
+    is not initialized yet. Allow only in private chat.
+    """
+    allowed = config.allowed_user_ids or []
+    if not allowed:
+        return False
+
+    normalized = {str(item).strip().lower() for item in allowed if str(item).strip()}
+    if "me" not in normalized:
+        return False
+
+    if not bool(getattr(event, "is_private", False)):
+        return False
+
+    owner_id = await _get_owner_user_id()
+    return owner_id is None
+
+
+async def _ensure_authorized_or_reply(event, allow_login_bootstrap: bool = False) -> bool:
     if await _is_authorized_event(event):
+        return True
+
+    if allow_login_bootstrap and await _allow_login_bootstrap(event):
+        logger.info(
+            "Allow login bootstrap before owner init: sender_id={} chat_id={}",
+            getattr(event, "sender_id", None),
+            getattr(event, "chat_id", None),
+        )
         return True
 
     logger.warning(
@@ -119,15 +147,16 @@ async def command_router(event):
     if not match:
         return
 
-    if not await _ensure_authorized_or_reply(event):
-        raise events.StopPropagation
-
     cmd = match.group(1).lower()
     arg = match.group(2)
 
     # 处理别名
     if cmd in ALIAS_MAP:
         cmd = ALIAS_MAP[cmd]
+
+    allow_login_bootstrap = (cmd == "login")
+    if not await _ensure_authorized_or_reply(event, allow_login_bootstrap=allow_login_bootstrap):
+        raise events.StopPropagation
 
     handler = COMMAND_MAP.get(cmd)
     if not handler:
@@ -154,11 +183,12 @@ async def state_handler(event):
     if not state:
         return
 
-    if not await _ensure_authorized_or_reply(event):
-        raise events.StopPropagation
-
     cmd = state.get('command')
     step = state.get('step')
+    allow_login_bootstrap = (cmd == "login")
+    if not await _ensure_authorized_or_reply(event, allow_login_bootstrap=allow_login_bootstrap):
+        raise events.StopPropagation
+
     logger.debug(f"Processing state: user={event.chat_id}, cmd={cmd}, step={step}")
 
     try:
