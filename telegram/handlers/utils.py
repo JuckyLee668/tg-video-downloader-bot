@@ -1,7 +1,8 @@
 import math
-from loguru import logger
-from telegram.client import tg_clients
+
 from telegram import search
+from telegram.client import tg_clients
+
 
 async def ensure_searcher(event=None):
     """
@@ -24,7 +25,8 @@ async def ensure_searcher(event=None):
     return True
 
 def format_size(size_bytes):
-    if size_bytes == 0: return "0B"
+    if size_bytes == 0:
+        return "0B"
     size_name = ("B", "KB", "MB", "GB", "TB")
     i = int(math.floor(math.log(size_bytes, 1024)))
     p = math.pow(1024, i)

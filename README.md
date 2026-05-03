@@ -1,129 +1,375 @@
 # Telegram Media Downloader Bot
 
-基于 **Telethon + FastAPI** 的多端媒体下载器，提供 Telegram Bot 指令与 Web 控制台，支持批量下载 / 转发、关键字与时间范围搜索，并可按需启用 HTTP/SOCKS5 代理。
+基于 **Telethon + FastAPI + SQLite** 的 Telegram 媒体下载与转发工具。项目提供 Telegram Bot 命令和 Web 控制台，支持频道连接、关键词搜索、时间范围搜索、批量下载、批量转发、代理配置和下载历史管理。
 
-## 功能亮点
-- 高并发下载：自适应并发队列，支持断点、批量任务。
-- 双端控制：Bot 命令 + Web 界面实时查看/管理任务。
-- 搜索增强：按关键字、时间区间或最近消息筛选，并可一键批量下载/转发。
-- 账号双客户端：Bot 客户端 + 用户（MTProto）客户端，分离权限更安全。
-- 代理支持：可为全局或用户客户端配置 HTTP / SOCKS5 代理（默认关闭）。
+## 功能
 
-## 使用方法
-- 直接转发视频或其他文件到Bot后会自动下载。
-- 可以在Bot内使用命令连接群组并选择下载或转发（如果不能直接转发会下载并转发，要注意非Premium只能转发大小为2GB内文件）。
-- 可以在Web 控制台：`http://127.0.0.1:8000`连接群组然后下载或下载并转发。
+- Telegram Bot 控制：私聊 Bot 即可登录用户客户端、连接频道、搜索、下载和转发。
+- Web 控制台：默认监听 `127.0.0.1:8000`，可查看队列、历史、频道和登录状态。
+- 批量任务队列：下载任务落 SQLite，worker 通过数据库原子领取任务，避免重复处理。
+- 下载安全：保存文件名前会做路径净化，避免非法文件名和路径穿越。
+- 搜索优化：多频道搜索使用有限并发，兼顾速度和 Telegram 限流风险。
+- Web API 安全：生产环境强制设置 `WEB_API_KEY`；API key 使用常量时间比较，连续失败会临时锁定。
+- 代理支持：支持 HTTP 和 SOCKS5，可为全局或用户客户端配置代理。
+
+## 目录结构
+
+```text
+core/          配置、数据库、路径安全工具
+downloader/    下载引擎和任务管理器
+telegram/      Telethon 客户端、路由、命令处理和频道搜索
+web/           FastAPI 应用、API 路由和请求模型
+public/        Web 静态页面
+tests/         pytest 测试
+data/          SQLite 数据库目录
+```
 
 ## 环境要求
-- Python 3.8+
-- 可访问 Telegram 的网络（如需代理可在配置中开启）
 
-## 安装与启动
-###  1）先配置.env（必填）
-复制 `.env.example` 为 `.env` 并填入：
-BOT_TOKEN、API_ID 和 API_HASH （获取方法可以查看下文的常见问题的第4、5条）
-```
-BOT_TOKEN=你的BotToken
-USER_API_ID=你的UserApiId
-USER_API_HASH=你的UserApiHash
-```
-### 2）使用一键启动脚本（该脚本会检查配置文件、创建虚拟环境、安装依赖后启动）
-#### Linux
+- Python 3.11+ 推荐
+- 可访问 Telegram 的网络环境
+- Bot Token
+- Telegram API ID / API Hash
+
+## 快速开始
+
+1. 安装依赖：
+
 ```bash
-git clone https://github.com/your-repo/tg-video-downloader-bot.git
-cd tg-video-downloader-bot
-chmod +x start.sh 
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+Windows PowerShell：
+
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+2. 配置环境变量：
+
+复制 `.env.example` 为 `.env`，填写：
+
+```env
+BOT_TOKEN=你的BotToken
+USER_API_ID=你的API_ID
+USER_API_HASH=你的API_HASH
+```
+
+3. 启动：
+
+```bash
+python main.py
+```
+
+也可以使用一键脚本：
+
+Linux / macOS：
+
+```bash
+chmod +x start.sh
 ./start.sh
 ```
-#### windows
+
+Windows PowerShell：
+
+```powershell
+.\start.ps1
 ```
- .\start.ps1
+
+脚本支持只检查环境而不启动服务：
+
+```bash
+./start.sh --check
 ```
-启动成功后：
-- Web 控制台：`http://127.0.0.1:8000`
-- Bot 会自动上线（使用你提供的 Bot Token）。
+
+```powershell
+.\start.ps1 -Check
+```
+
+跳过依赖安装：
+
+```bash
+./start.sh --skip-install
+```
+
+```powershell
+.\start.ps1 -SkipInstall
+```
+
+临时覆盖 Web 监听地址和端口：
+
+```bash
+./start.sh --host 127.0.0.1 --port 8001
+```
+
+```powershell
+.\start.ps1 -HostOverride 127.0.0.1 -PortOverride 8001
+```
+
+启动后访问：
+
+```text
+http://127.0.0.1:8000
+```
 
 ## 配置
-### 1) config.yaml（可选）
-- 下载路径、并发、文件命名等常规项已默认配置。
-- `allowed_user_ids` 用于控制 Bot 命令权限（推荐按下面三种模式配置）：
-  - **模式 A：不限制（仅建议本地测试）**
+
+项目会优先读取 `config.local.yaml`，不存在时读取 `config.yaml`。仓库提供 `config.example.yaml` 作为参考。
+
+常用配置：
+
+```yaml
+save_path: ./downloads
+max_download_task: 3
+max_connected_channels: 10
+web_host: 127.0.0.1
+web_port: 8000
+web_cors_origins:
+  - http://127.0.0.1:8000
+environment: local
+allowed_user_ids: []
+proxy: null
+user_api:
+  api_id: ''
+  api_hash: ''
+  proxy: null
+```
+
+### 用户权限
+
+`allowed_user_ids` 控制谁可以使用 Bot：
+
 ```yaml
 allowed_user_ids: []
 ```
-  - **模式 B：仅允许当前 user client 账号（推荐个人使用）**
+
+空列表表示不限制，仅建议本地测试使用。
+
 ```yaml
 allowed_user_ids:
   - me
 ```
-   - 说明：`me` 表示“当前已登录的 user client 账号”。若首次使用，请先在 Bot 私聊里执行 `/login` 完成初始化。
-  - **模式 C：仅允许指定账号（推荐多人协作）**
+
+`me` 表示已登录的用户客户端账号。首次登录前，Bot 私聊中的 `/login` 会允许一次初始化流程。
+
 ```yaml
 allowed_user_ids:
   - "123456789"
   - "@alice"
 ```
 
-- **代理默认关闭**：
-```yaml
-proxy: null
-user_api:
-  api_id: "<填在 .env>"
-  api_hash: "<填在 .env>"
-  proxy: null
+也可以指定 Telegram 用户 ID 或用户名。
+
+### Web API 安全
+
+本地默认不要求 `WEB_API_KEY`。如果要让 Web 服务监听公网地址，必须设置强随机密钥：
+
+```env
+WEB_API_KEY=your_strong_random_key
+APP_ENV=production
+WEB_HOST=0.0.0.0
 ```
-- 如需开启全局/用户代理，填写：
+
+生产环境下，如果 `APP_ENV=production` 但没有设置 `WEB_API_KEY`，API 会拒绝服务。
+
+### CORS
+
+默认只允许本地控制台来源：
+
+```yaml
+web_cors_origins:
+  - http://127.0.0.1:8000
+```
+
+如需反向代理或自定义域名，显式添加对应来源。
+
+### 代理
+
 ```yaml
 proxy:
-  scheme: socks5   # 或 http
+  scheme: socks5
   hostname: 127.0.0.1
   port: 10808
   username: null
   password: null
   rdns: true
 user_api:
-  api_id: "<...>"
-  api_hash: "<...>"
-  proxy: null      # 若只想用户端走代理，可在这里填，global 仍为 null
+  proxy: null
 ```
-也可以在 Web 控制台 “Settings & Proxy” 中保存；保存后写入 config.yaml，并同时应用到用户客户端。
 
-## Bot 命令速览
+`user_api.proxy` 优先级高于全局 `proxy`。
+
+## Bot 命令
+
 | 命令 | 作用 |
 | --- | --- |
-| /start | 帮助 / 功能列表 |
-| /status ( /s ) | 查看系统/下载状态 |
-| /auth ( /login_status ) | 检查用户客户端登录与代理状态 |
-| /login | 登录用户客户端（MTProto） |
-| /dl | 查看下载队列 |
-| /bd | 批量下载最近一次搜索结果 |
-| /bf | 批量转发到指定聊天（会询问范围与转发后是否删除文件，删除标记为 [DEL] 前缀） |
-| /csk | 渠道关键字搜索 |
-| /cst | 渠道时间范围搜索 |
-| /csr | 渠道最近消息 |
-| /cc | 连接/切换渠道 |
-| /channels | 已连接渠道列表 |
+| `/start` | 查看帮助 |
+| `/help` | 查看完整命令 |
+| `/status` 或 `/s` | 查看系统和任务状态 |
+| `/auth` | 查看用户客户端登录状态 |
+| `/login` | 登录 Telegram 用户客户端 |
+| `/cc` | 连接频道 |
+| `/channels` | 查看已连接频道 |
+| `/csk` | 按关键词搜索频道媒体 |
+| `/csr` | 获取最近媒体消息 |
+| `/cst` | 按时间范围搜索媒体 |
+| `/bd` | 批量下载上次搜索结果 |
+| `/bdf` | 按文件格式批量下载 |
+| `/bf` | 批量转发上次搜索结果 |
+| `/forward` | 通过链接添加转发任务 |
+| `/dl` | 查看下载队列 |
+| `/cancel` 或 `/c` | 取消当前用户待处理任务 |
+| `/clear` 或 `/cl` | 清理当前用户搜索缓存 |
 
 ## Web 控制台
-- 地址：`http://127.0.0.1:8000`
-- Tab “Settings & Proxy” 可配置并保存代理（默认关闭）。保存后需重启以完全作用于 Telegram 客户端。
+
+默认地址：
+
+```text
+http://127.0.0.1:8000
+```
+
+主要能力：
+
+- 查看下载队列和进度
+- 删除、清空、重试任务
+- 查看下载历史
+- 连接频道、加入频道
+- 搜索频道媒体
+- 登录用户客户端
+- 配置代理
+
+## 数据库与队列
+
+SQLite 数据库默认位于：
+
+```text
+data/telegram_downloader.db
+```
+
+下载任务会先写入 `download_queue`。worker 不直接信任内存队列，而是通过数据库原子领取任务：
+
+```text
+pending/failed -> downloading -> completed/history
+```
+
+这使进程重启和多 worker 场景下的重复下载风险更低。
+
+## Docker
+
+构建镜像：
+
+```bash
+docker build -t tg-media-downloader .
+```
+
+运行：
+
+```bash
+docker run --rm -p 8000:8000 \
+  --env-file .env \
+  -e APP_ENV=production \
+  -e WEB_HOST=0.0.0.0 \
+  -e WEB_API_KEY=your_strong_random_key \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/downloads:/app/downloads" \
+  tg-media-downloader
+```
+
+## 测试与代码质量
+
+运行测试：
+
+```bash
+pytest
+```
+
+运行 lint：
+
+```bash
+ruff check core downloader telegram web tests
+```
+
+当前测试覆盖：
+
+- 文件名净化和下载路径安全
+- SQLite 任务原子领取
+- 下载完成后的历史归档
+- Web API 请求模型约束
+
+## CI
+
+仓库包含 GitHub Actions 工作流：
+
+```text
+.github/workflows/ci.yml
+```
+
+CI 会执行：
+
+- 安装依赖
+- `ruff check`
+- `pytest`
 
 ## 常见问题
-1) **网页打不开 /502**  
-   - 确认 `python main.py` 正在运行且监听 `127.0.0.1:8000`。  
-   - 如端口被占用，可在 `main.py` 将 `port=8000` 改为空闲端口重新启动。
-2) **需要代理才能连上 Telegram**  
-   - 在 `config.yaml` 或 Web 里填好代理参数，保存后重启。
-3) **登录失败**  
-   - 确保 `.env` 中 USER_API_ID / HASH 正确；在 Telegram 与 Bot 对话中使用 `/login` 按提示输入验证码。
-4) **获取BOT_TOKEN（ 使用Telegram客户端申请）**
-   - 添加好友 @BotFather。
-   - 输入【 /start 】 -【 /newbot 】，给新机器人自定义起名，必须以bot结尾，不能和别人重复。
-   - 起名新建成功后会输出Use this token to access the HTTP API，就是你这个机器人的Token。
-5) **获取API_ID和API_HASH（通过官方方式申请）**
-   - 访问申请页面:打开浏览器进入 `my.telegram.org`,后使用你的 Telegram 账号登录。
-   - 创建应用：登录后选择 API development tools。填写 App title、Short name、平台类型等信息。点击 Create application 提交。
-   - 获取凭证：创建成功后，页面会显示 API ID 和 API Hash。
+
+### Web 页面打不开
+
+确认程序正在运行，并监听：
+
+```text
+127.0.0.1:8000
+```
+
+如果端口被占用，可以设置：
+
+```env
+WEB_PORT=8001
+```
+
+### 无法连接 Telegram
+
+确认网络可访问 Telegram。如需代理，在 `config.local.yaml` 或 Web 控制台中配置 HTTP/SOCKS5 代理。
+
+### 登录失败
+
+检查 `.env` 中的：
+
+```env
+USER_API_ID=
+USER_API_HASH=
+```
+
+然后在 Bot 私聊中执行 `/login`。
+
+### Web API 返回 WEB_API_KEY missing
+
+说明当前已设置 `WEB_API_KEY`，调用 API 时需要带请求头：
+
+```text
+X-API-Key: your_strong_random_key
+```
+
+### 公开部署注意事项
+
+公网部署必须同时满足：
+
+- 设置 `APP_ENV=production`
+- 设置强随机 `WEB_API_KEY`
+- 配置正确的 `web_cors_origins`
+- 使用反向代理提供 HTTPS
+- 不提交 `.env`、`session.txt`、`*.session`、数据库和下载目录
+
+## 获取 Telegram 凭据
+
+Bot Token：在 Telegram 中联系 `@BotFather`，使用 `/newbot` 创建。
+
+API ID / API Hash：访问 `https://my.telegram.org`，进入 API development tools 创建应用。
 
 ## 免责声明
-本项目仅供学习与个人备份使用，请遵守 Telegram 服务条款与所在地法律法规。
+
+本项目仅供学习、个人备份和合法用途。请遵守 Telegram 服务条款以及所在地法律法规。

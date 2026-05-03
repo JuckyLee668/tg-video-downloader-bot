@@ -1,9 +1,11 @@
 import os
+from pathlib import Path
+from typing import Dict, List, Optional
+
 import yaml
-from typing import List, Optional, Dict
-from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from loguru import logger
+from pydantic import BaseModel, Field
 
 load_dotenv(override=True)
 
@@ -46,6 +48,10 @@ class Config(BaseModel):
     user_api: UserApiConfig = Field(default_factory=UserApiConfig)
     max_connected_channels: int = Field(default=10)
     date_format: str = Field(default="%Y_%m")
+    web_host: str = Field(default="127.0.0.1")
+    web_port: int = Field(default=8000)
+    web_cors_origins: List[str] = Field(default_factory=lambda: ["http://127.0.0.1:8000"])
+    environment: str = Field(default="local")
 
     def save(self, config_path: str = "config.yaml"):
         # We need to be careful with .local override, but usually we save to the original if possible
@@ -64,9 +70,12 @@ class Config(BaseModel):
 def load_config(config_path: str = "config.yaml") -> Config:
     if os.path.exists("config.local.yaml"):
         config_path = "config.local.yaml"
-    
-    with open(config_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+
+    if Path(config_path).exists():
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    else:
+        data = {}
     
     # Override with environment variables
     if os.getenv("BOT_TOKEN"):
@@ -80,6 +89,17 @@ def load_config(config_path: str = "config.yaml") -> Config:
 
     if os.getenv("USER_API_HASH"):
         data["user_api"]["api_hash"] = os.getenv("USER_API_HASH")
+
+    if os.getenv("APP_ENV"):
+        data["environment"] = os.getenv("APP_ENV")
+    if os.getenv("WEB_HOST"):
+        data["web_host"] = os.getenv("WEB_HOST")
+    if os.getenv("WEB_PORT"):
+        data["web_port"] = int(os.getenv("WEB_PORT"))
+    if os.getenv("WEB_CORS_ORIGINS"):
+        data["web_cors_origins"] = [
+            item.strip() for item in os.getenv("WEB_CORS_ORIGINS", "").split(",") if item.strip()
+        ]
 
     return Config(**data)
 

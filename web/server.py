@@ -1,16 +1,21 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+
+from core.config import config
 from web.routes import router as api_router
-import os
+
 
 def create_app():
     app = FastAPI(title="TG Media Downloader Dashboard")
+    cors_origins = config.web_cors_origins or ["http://127.0.0.1:8000"]
     
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=cors_origins,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )

@@ -1,13 +1,15 @@
-from telethon import events
 from datetime import datetime
+
+from core.database import db_manager
+from telegram import search as search_module
 from telegram.handlers.utils import ensure_searcher
 from telegram.search_cache import search_cache
 from telegram.state_manager import state_manager
-from telegram import search as search_module
-from core.database import db_manager
+
 
 async def search_keyword_handler(event, arg=None):
-    if not await ensure_searcher(event): return
+    if not await ensure_searcher(event):
+        return
     
     keyword = arg
     if not keyword:
@@ -38,7 +40,8 @@ async def search_keyword_handler(event, arg=None):
         await event.respond(f"❌ 搜索出错: {str(e)}")
 
 async def search_recent_handler(event, arg=None):
-    if not await ensure_searcher(event): return
+    if not await ensure_searcher(event):
+        return
     
     count = int(arg) if arg and arg.isdigit() else 50
     await event.respond(f"🔍 正在获取最近 {count} 条消息中的媒体...")
@@ -62,7 +65,8 @@ async def search_recent_handler(event, arg=None):
         await event.respond(f"❌ 获取出错: {str(e)}")
 
 async def search_time_handler(event, arg=None):
-    if not await ensure_searcher(event): return
+    if not await ensure_searcher(event):
+        return
     
     # 解析日期 "2023-01-01 2023-01-02"
     dates = arg.split() if arg else []

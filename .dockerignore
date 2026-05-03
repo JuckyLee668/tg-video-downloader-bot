@@ -1,0 +1,12 @@
+.git
+venv
+__pycache__
+*.pyc
+.env
+*.session
+*.session-journal
+session.txt
+data/*.db*
+downloads
+logs
+public/avatars/user_*.jpg

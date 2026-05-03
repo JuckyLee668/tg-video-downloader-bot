@@ -1,306 +1,323 @@
 import asyncio
-import os
 import json
-from typing import Dict, Any, List
+import re
+from pathlib import Path
+from typing import Any, Dict
+
 from loguru import logger
+from telethon.tl.types import InputPeerChannel
+
 from core.config import config
 from core.database import db_manager
+from core.paths import safe_join_download_path
 from downloader.engine import download_engine
-from telethon.tl.types import InputPeerChannel
+
 
 class DownloadManager:
     def __init__(self):
         self.queue = asyncio.Queue()
-        self.active_tasks = set() # Store task_ids currently being processed
-        self.workers_started = False
-        self.max_concurrent = config.max_download_task
+        self.active_tasks: set[str] = set()
+        self.worker_tasks: list[asyncio.Task] = []
+        self.max_concurrent = max(1, int(config.max_download_task))
+        self.forward_peer_cache: dict[str, Any] = {}
 
     async def init(self):
-        # Restore pending tasks from DB
         pending_tasks = await db_manager.get_pending_tasks()
-        
-        # Current items in queue (roughly) to avoid duplication
-        # asyncio.Queue doesn't allow easy peek, so we rely on active_tasks + fresh get from DB
-        
-        added_count = 0
-        for task in pending_tasks:
-            task_id = task['task_id']
-            if task_id not in self.active_tasks:
-                await self.queue.put(task)
-                added_count += 1
-        
-        logger.info(f"下载管理器已初始化，已恢复 {added_count} 个待下载任务")
-        
-        # Start workers only once
-        if not self.workers_started:
-            for i in range(self.max_concurrent):
-                asyncio.create_task(self.worker(i))
-            self.workers_started = True
+        for _ in pending_tasks:
+            await self.queue.put("wake")
+
+        while len(self.worker_tasks) < self.max_concurrent:
+            worker_id = len(self.worker_tasks)
+            self.worker_tasks.append(asyncio.create_task(self.worker(worker_id)))
+
+        logger.info(f"Download manager initialized with {self.max_concurrent} workers")
 
     async def add_task(self, task: Dict[str, Any]):
         task_id = await db_manager.add_download_task(task)
-        if task_id in self.active_tasks:
-            return task_id
-            
-        # Refresh task from DB by task_id
-        db_task = await db_manager.get_task_by_id(task_id)
-        if db_task:
-            await self.queue.put(db_task)
+        await self.queue.put("wake")
         return task_id
 
     async def cancel_user_tasks(self, chat_id: str):
-        """取消用户的所有待处理任务"""
         await db_manager.cancel_tasks(chat_id)
-        logger.info(f"已取消用户 {chat_id} 的所有待处理任务")
+        logger.info(f"Cancelled pending tasks for user {chat_id}")
+
+    async def wake_workers(self, count: int | None = None):
+        for _ in range(count or self.max_concurrent):
+            await self.queue.put("wake")
 
     async def worker(self, worker_id: int):
-        from telegram.client import tg_clients
-        from telethon.errors import FloodWaitError, RPCError
-        
         while True:
-            task = await self.queue.get()
-            task_id = task['task_id']
-
-            # 检查任务是否已被取消
-            db_task = await db_manager.get_task_by_id(task_id)
-            if not db_task or db_task['status'] == 'cancelled':
-                logger.info(f"任务 {task_id} 已取消或不存在，跳过")
-                self.queue.task_done()
-                continue
-
-            # normalize task_data
-            task_data_raw = task.get('task_data') or "{}"
-            if isinstance(task_data_raw, str):
-                try:
-                    task_data = json.loads(task_data_raw)
-                except Exception:
-                    task_data = {}
-            elif isinstance(task_data_raw, dict):
-                task_data = task_data_raw
-            else:
-                task_data = {}
-            
-            # Double check if another worker is already on it
-            if task_id in self.active_tasks:
-                self.queue.task_done()
-                continue
-                
+            await self.queue.get()
             try:
-                self.active_tasks.add(task_id)
-                await db_manager.update_task_status(task_id, 'downloading')
-                logger.info(f"Worker {worker_id} 开始处理任务: {task['file_name']}")
-                
-                save_path = os.path.join(config.save_path, task['file_name'])
-                os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                
-                downloaded_success = False
-                
-                # 尝试获取消息对象的逻辑
-                download_client = None
-                message_obj = None
-                
-                # 1. 优先尝试使用 User Client (支持频道/大文件/限制内容)
-                if tg_clients.user_client and await tg_clients.user_client.is_user_authorized():
-                    try:
-                        peer_id_str = task.get('channel_id') or task.get('chat_id')
-                        if not peer_id_str:
-                            raise Exception("任务数据中缺失有效的 chat_id 或 channel_id")
-                        
-                        access_hash = task_data.get('access_hash') or task.get('access_hash')
-                        entity = None
-                        if access_hash and str(peer_id_str).startswith('-100'):
-                            try:
-                                cid = int(str(peer_id_str).replace('-100', ''))
-                                entity = InputPeerChannel(cid, int(access_hash))
-                            except Exception: pass
-                        
-                        if not entity:
-                            entity = await tg_clients.user_client.get_input_entity(int(peer_id_str))
-                        
-                        message_id = int(task['message_id'])
-                        msgs = await tg_clients.user_client.get_messages(entity, ids=[message_id])
-                        if msgs and msgs[0] and msgs[0].media:
-                            download_client = tg_clients.user_client
-                            message_obj = msgs[0]
-                    except FloodWaitError as e:
-                        logger.warning(f"触发 Telegram 限速，需要等待 {e.seconds} 秒: {task['file_name']}")
-                        await db_manager.update_task_status(task_id, 'pending', f"限速等待: {e.seconds}s")
-                        await asyncio.sleep(e.seconds + 1)
-                        await self.queue.put(task)
-                        continue
-                    except Exception as e:
-                        # 检查是否是由于 Flood 导致的通用错误
-                        if "FLOOD_PREMIUM_WAIT" in str(e) or "FLOOD_WAIT" in str(e):
-                            import re
-                            wait_seconds = 30 
-                            match = re.search(r'WAIT_(\d+)', str(e))
-                            if match: wait_seconds = int(match.group(1))
-                            logger.warning(f"检测到限速错误字符串，等待 {wait_seconds} 秒: {e}")
-                            await db_manager.update_task_status(task_id, 'pending', f"限速等待: {wait_seconds}s")
-                            await asyncio.sleep(wait_seconds + 1)
-                            await self.queue.put(task)
-                            continue
-                        logger.debug(f"User Client 无法获取消息，准备尝试 Bot Client: {e}")
-
-                # 2. 如果 User Client 失败或不可用，尝试使用 Bot Client (处理私聊 Bot 的消息)
-                if not message_obj and tg_clients.bot_client:
-                    try:
-                        peer_id = int(task.get('chat_id') or 0)
-                        message_id = int(task['message_id'])
-                        msgs = await tg_clients.bot_client.get_messages(peer_id, ids=[message_id])
-                        if msgs and msgs[0] and msgs[0].media:
-                            download_client = tg_clients.bot_client
-                            message_obj = msgs[0]
-                            logger.info(f"使用 Bot Client 协助下载消息: {task['file_name']}")
-                    except Exception as e:
-                        logger.error(f"Bot Client 也无法获取消息: {e}")
-
-                # 3. 执行执行下载
-                if download_client and message_obj:
-                    # --- 优化：检查本地文件是否已存在且大小匹配 ---
-                    expected_size = task.get('file_size') or 0
-                    if os.path.exists(save_path) and expected_size > 0:
-                        actual_size = os.path.getsize(save_path)
-                        if actual_size == expected_size:
-                            logger.info(f"本地文件已存在且完整，跳过下载直接进入转发阶段: {task['file_name']}")
-                            downloaded_success = True
-                    
-                    if not downloaded_success:
-                        await download_engine.download_via_telethon(
-                            download_client, 
-                            message_obj, 
-                            save_path,
-                            self.create_progress_callback(task_id)
-                        )
-                        downloaded_success = True
-                else:
-                    raise Exception("无法通过任何客户端获取到该媒体消息（可能已被删除或无权限访问）")
-
-                if downloaded_success:
-                    # sanity check: 文件存在且非空
-                    if (not os.path.exists(save_path)) or os.path.getsize(save_path) == 0:
-                        raise Exception(f"下载完成但未找到文件: {save_path}")
-
-                    # forward if requested
-                    forward_target = task_data.get('forward_target')
-                    delete_after = bool(task_data.get('delete_after_forward', False))
-                    caption = task_data.get('caption', '') or ""
-                    if forward_target:
-                        try:
-                            peer = await tg_clients.user_client.get_entity(str(forward_target))
-                            try:
-                                # 对于大文件且走代理的环境，send_file 自动分片偶尔失败
-                                # 我们先手动上传文件，获得 InputFile
-                                file_size = os.path.getsize(save_path)
-                                force_doc = task.get('media_type') == 'document'
-                                
-                                # --- 增加：2GB 限制检查 ---
-                                if file_size > 2000 * 1024 * 1024:
-                                    me = await tg_clients.user_client.get_me()
-                                    if not getattr(me, 'premium', False):
-                                        raise Exception(f"文件大小 ({file_size / 1024 / 1024:.2f} MB) 超过了非会员 2GB 的限制，请使用会员账号或手动分割文件。")
-                                
-                                logger.info(f"正在上传转发文件: {task['file_name']} ({file_size / 1024 / 1024:.2f} MB)")
-                                
-                                # 强制使用 512KB 分片以减少分片数量，避免超过 4000 个分片的限制
-                                uploaded_file = await tg_clients.user_client.upload_file(
-                                    save_path,
-                                    part_size_kb=512 if file_size > 100 * 1024 * 1024 else None,
-                                    progress_callback=self.create_progress_callback(task_id)
-                                )
-                                
-                                await tg_clients.user_client.send_file(
-                                    peer,
-                                    uploaded_file,
-                                    caption=caption,
-                                    force_document=force_doc
-                                )
-                            except Exception as fe:
-                                if "SaveBigFilePartRequest" in str(fe) or "file parts is invalid" in str(fe):
-                                    logger.warning(f"手动上传转发失败，尝试最终降级方案: {fe}")
-                                    await asyncio.sleep(3)
-                                    # 最终降级：直接由 Telethon 托管最原始的上传
-                                    await tg_clients.user_client.send_file(peer, save_path, caption=caption)
-                                else:
-                                    raise fe
-                            
-                            # 清理文件
-                            if delete_after and os.path.exists(save_path):
-                                try:
-                                    os.remove(save_path)
-                                except Exception as de:
-                                    logger.warning(f"删除转发后文件失败: {de}")
-                        except Exception as fe:
-                            logger.error(f"下载完成但转发失败: {fe}")
-                            # 删除文件避免堆积
-                            if delete_after and os.path.exists(save_path):
-                                try:
-                                    os.remove(save_path)
-                                except Exception as de:
-                                    logger.warning(f"删除失败文件时出错: {de}")
-                            raise fe
-
-                    await db_manager.complete_download_task(task, {
-                        'download_path': save_path if not delete_after else '',
-                        'status': 'completed'
-                    })
-
-                    # 通知触发者（如果记录了 requester_chat_id 且 bot_client 可用）
-                    requester = task_data.get('requester_chat_id') or task.get('chat_id')
-                    try:
-                        if requester and tg_clients.bot_client:
-                            msg = f"✅ 任务已成功处理: `{task['file_name']}`"
-                            if forward_target:
-                                msg += f"\n📤 已转发至: `{forward_target}`"
-                            
-                            # Ensure target ID is integer
-                            target_id = int(str(requester))
-                            await tg_clients.bot_client.send_message(target_id, msg)
-                            logger.info(f"成功向用户 {target_id} 发送任务完成通知: {task['file_name']}")
-                    except Exception as ne:
-                        logger.warning(f"通知用户成功消息失败: {ne}")
-                else:
-                    raise Exception("下载失败，未能在指定引擎中完成下载")
-
-            except Exception as e:
-                logger.error(f"任务处理出错: {task_id}, 错误: {e}")
-                await db_manager.update_task_status(task_id, 'failed', str(e))
-
-                # 通知触发者（如果记录了 requester_chat_id 且 bot_client 可用）
-                requester = task_data.get('requester_chat_id')
-                try:
-                    if requester and tg_clients.bot_client:
-                        await tg_clients.bot_client.send_message(requester, f"❌ 任务 {task.get('file_name')} 失败: {e}")
-                except Exception as ne:
-                    logger.warning(f"通知用户失败: {ne}")
-
-                # 不再直接删除任务，允许在数据库中保留状态以便重试或查看
-                # await db_manager.delete_download_task(task_id)
-            
+                while True:
+                    task = await db_manager.claim_next_task()
+                    if not task:
+                        break
+                    await self.process_task(worker_id, task)
             finally:
-                if task_id in self.active_tasks:
-                    self.active_tasks.remove(task_id)
                 self.queue.task_done()
+
+    async def process_task(self, worker_id: int, task: Dict[str, Any]):
+        from telethon.errors import FloodWaitError
+
+        from telegram.client import tg_clients
+
+        task_id = task["task_id"]
+        task_data = self._loads_task_data(task.get("task_data"))
+        self.active_tasks.add(task_id)
+
+        try:
+            logger.info(f"Worker {worker_id} started task {task_id}: {task.get('file_name')}")
+            save_path = safe_join_download_path(config.save_path, task.get("file_name", "download.bin"))
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+
+            download_client, message_obj = await self._resolve_message(tg_clients, task, task_data)
+            if not download_client or not message_obj:
+                raise RuntimeError("No Telegram client could access this media message")
+
+            await self._download_if_needed(download_client, message_obj, save_path, task)
+            await self._forward_if_requested(tg_clients, save_path, task, task_data)
+
+            delete_after = bool(task_data.get("delete_after_forward", False))
+            await db_manager.complete_download_task(task, {
+                "download_path": "" if delete_after else str(save_path),
+                "status": "completed",
+            })
+            await self._notify_success(tg_clients, task, task_data)
+
+        except FloodWaitError as e:
+            wait_seconds = int(getattr(e, "seconds", 30))
+            logger.warning(f"Flood wait for task {task_id}: {wait_seconds}s")
+            await db_manager.requeue_task(task_id, f"Flood wait {wait_seconds}s")
+            asyncio.create_task(self._wake_after(wait_seconds + 1))
+        except Exception as e:
+            wait_seconds = self._parse_flood_wait_seconds(str(e))
+            if wait_seconds:
+                logger.warning(f"Flood wait text for task {task_id}: {wait_seconds}s")
+                await db_manager.requeue_task(task_id, f"Flood wait {wait_seconds}s")
+                asyncio.create_task(self._wake_after(wait_seconds + 1))
+            else:
+                logger.error(f"Task failed: {task_id}, error: {e}")
+                await db_manager.update_task_status(task_id, "failed", str(e))
+                await self._notify_failure(tg_clients, task, task_data, e)
+        finally:
+            self.active_tasks.discard(task_id)
+
+    async def _resolve_message(self, tg_clients, task: Dict[str, Any], task_data: Dict[str, Any]):
+        download_client = None
+        message_obj = None
+
+        if tg_clients.user_client and await tg_clients.user_client.is_user_authorized():
+            try:
+                peer_id_str = task.get("channel_id") or task.get("chat_id")
+                if not peer_id_str:
+                    raise ValueError("task has no chat_id/channel_id")
+
+                access_hash = task_data.get("access_hash") or task.get("access_hash")
+                entity = None
+                if access_hash and str(peer_id_str).startswith("-100"):
+                    cid = int(str(peer_id_str).replace("-100", ""))
+                    entity = InputPeerChannel(cid, int(access_hash))
+                if not entity:
+                    entity = await tg_clients.user_client.get_input_entity(int(peer_id_str))
+
+                messages = await tg_clients.user_client.get_messages(entity, ids=[int(task["message_id"])])
+                if messages and messages[0] and messages[0].media:
+                    download_client = tg_clients.user_client
+                    message_obj = messages[0]
+            except Exception as e:
+                if self._parse_flood_wait_seconds(str(e)):
+                    raise
+                logger.debug(f"User client could not resolve message, trying bot client: {e}")
+
+        if not message_obj and tg_clients.bot_client:
+            try:
+                messages = await tg_clients.bot_client.get_messages(
+                    int(task.get("chat_id") or 0),
+                    ids=[int(task["message_id"])],
+                )
+                if messages and messages[0] and messages[0].media:
+                    download_client = tg_clients.bot_client
+                    message_obj = messages[0]
+            except Exception as e:
+                logger.error(f"Bot client could not resolve message: {e}")
+
+        return download_client, message_obj
+
+    async def _download_if_needed(self, client, message, save_path: Path, task: Dict[str, Any]):
+        expected_size = int(task.get("file_size") or 0)
+        if save_path.exists() and expected_size > 0 and save_path.stat().st_size == expected_size:
+            logger.info(f"Existing complete file found, skipping download: {save_path.name}")
+            return
+
+        await download_engine.download_via_telethon(
+            client,
+            message,
+            str(save_path),
+            self.create_progress_callback(task["task_id"]),
+        )
+        if not save_path.exists() or save_path.stat().st_size == 0:
+            raise RuntimeError(f"Download finished but file is missing or empty: {save_path}")
+
+    async def _forward_if_requested(self, tg_clients, save_path: Path, task: Dict[str, Any], task_data: Dict[str, Any]):
+        forward_target = task_data.get("forward_target")
+        if not forward_target:
+            return
+        if not tg_clients.user_client or not await tg_clients.user_client.is_user_authorized():
+            raise RuntimeError("User client is required for forwarding")
+
+        delete_after = bool(task_data.get("delete_after_forward", False))
+        try:
+            peer = await self._resolve_forward_peer(tg_clients.user_client, forward_target)
+            file_size = save_path.stat().st_size
+            if file_size > 2000 * 1024 * 1024:
+                me = await tg_clients.user_client.get_me()
+                if not getattr(me, "premium", False):
+                    raise RuntimeError("File exceeds 2GB and the user account is not premium")
+
+            force_doc = task.get("media_type") == "document"
+            uploaded_file = await tg_clients.user_client.upload_file(
+                str(save_path),
+                part_size_kb=512 if file_size > 100 * 1024 * 1024 else None,
+                progress_callback=self.create_progress_callback(task["task_id"]),
+            )
+            await tg_clients.user_client.send_file(
+                peer,
+                uploaded_file,
+                caption=task_data.get("caption", "") or "",
+                force_document=force_doc,
+            )
+        except Exception as e:
+            if "SaveBigFilePartRequest" in str(e) or "file parts is invalid" in str(e):
+                await asyncio.sleep(3)
+                peer = await self._resolve_forward_peer(tg_clients.user_client, forward_target)
+                await tg_clients.user_client.send_file(peer, str(save_path), caption=task_data.get("caption", "") or "")
+            else:
+                raise
+        finally:
+            if delete_after and save_path.exists():
+                save_path.unlink(missing_ok=True)
+
+    async def _resolve_forward_peer(self, client, target: Any):
+        cache_key = str(target).strip()
+        if cache_key in self.forward_peer_cache:
+            return self.forward_peer_cache[cache_key]
+
+        candidates: list[Any] = [cache_key]
+        numeric_target = self._telegram_chat_id_or_none(cache_key)
+        if numeric_target is not None:
+            candidates.insert(0, numeric_target)
+
+        for candidate in candidates:
+            try:
+                peer = await client.get_input_entity(candidate)
+                self.forward_peer_cache[cache_key] = peer
+                return peer
+            except Exception:
+                pass
+            try:
+                entity = await client.get_entity(candidate)
+                peer = await client.get_input_entity(entity)
+                self.forward_peer_cache[cache_key] = peer
+                return peer
+            except Exception:
+                pass
+
+        if numeric_target is not None:
+            async for dialog in client.iter_dialogs(limit=None):
+                if int(dialog.id) == numeric_target:
+                    peer = await client.get_input_entity(dialog.entity)
+                    self.forward_peer_cache[cache_key] = peer
+                    return peer
+
+                entity_id = getattr(dialog.entity, "id", None)
+                if entity_id is not None and str(numeric_target).startswith("-100"):
+                    channel_id = int(str(numeric_target).replace("-100", ""))
+                    if int(entity_id) == channel_id:
+                        peer = await client.get_input_entity(dialog.entity)
+                        self.forward_peer_cache[cache_key] = peer
+                        return peer
+
+        raise RuntimeError(
+            f"Cannot resolve forward target {cache_key}. "
+            "Make sure the user account has joined the target channel/group, "
+            "or use a @username/link that the account can access."
+        )
+
+    async def _notify_success(self, tg_clients, task: Dict[str, Any], task_data: Dict[str, Any]):
+        requester = task_data.get("requester_chat_id") or task.get("chat_id")
+        requester_id = self._telegram_chat_id_or_none(requester)
+        if requester_id is None or not tg_clients.bot_client:
+            return
+        try:
+            await tg_clients.bot_client.send_message(
+                requester_id,
+                f"Task completed: `{task.get('file_name')}`",
+            )
+        except Exception as e:
+            logger.warning(f"Failed to notify task success: {e}")
+
+    async def _notify_failure(self, tg_clients, task: Dict[str, Any], task_data: Dict[str, Any], error: Exception):
+        requester = task_data.get("requester_chat_id")
+        requester_id = self._telegram_chat_id_or_none(requester)
+        if requester_id is None or not tg_clients.bot_client:
+            return
+        try:
+            await tg_clients.bot_client.send_message(
+                requester_id,
+                f"Task failed: `{task.get('file_name')}`\n{error}",
+            )
+        except Exception as e:
+            logger.warning(f"Failed to notify task failure: {e}")
+
+    def _telegram_chat_id_or_none(self, value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(str(value))
+        except (TypeError, ValueError):
+            return None
+
+    async def _wake_after(self, seconds: int):
+        await asyncio.sleep(max(1, seconds))
+        await self.wake_workers(1)
+
+    def _loads_task_data(self, raw: Any) -> Dict[str, Any]:
+        if isinstance(raw, dict):
+            return raw
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+
+    def _parse_flood_wait_seconds(self, message: str) -> int | None:
+        if "FLOOD_PREMIUM_WAIT" not in message and "FLOOD_WAIT" not in message:
+            return None
+        match = re.search(r"WAIT_?(\d+)", message)
+        return int(match.group(1)) if match else 30
 
     def create_progress_callback(self, task_id: str):
-        last_update_time = 0
+        last_update_time = 0.0
         last_progress = -1
 
         async def progress_callback(downloaded, total):
             nonlocal last_update_time, last_progress
             if not total:
                 return
-                
+
             import time
+
             current_time = time.time()
             progress = int(downloaded / total * 100)
-            
-            # Update every 1% or every 2 seconds
             if progress > last_progress or (current_time - last_update_time) > 2:
                 last_progress = progress
                 last_update_time = current_time
                 await db_manager.update_task_progress(task_id, progress)
-                
+
         return progress_callback
+
 
 download_manager = DownloadManager()

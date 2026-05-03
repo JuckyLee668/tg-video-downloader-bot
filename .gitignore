@@ -5,6 +5,7 @@ __pycache__/
 venv/
 ENV/
 .env
+config.local.yaml
 
 # Telegram Sessions
 *.session

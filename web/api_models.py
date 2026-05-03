@@ -1,42 +1,44 @@
-from pydantic import BaseModel
 from typing import List, Optional
 
+from pydantic import BaseModel, Field
+
+
 class ConnectRequest(BaseModel):
-    identifier: str
+    identifier: str = Field(min_length=1, max_length=200)
 
 class JoinRequest(BaseModel):
-    link: str
+    link: str = Field(min_length=1, max_length=300)
 
 class SearchKeywordRequest(BaseModel):
-    keyword: str
-    limit: Optional[int] = 50
+    keyword: str = Field(min_length=1, max_length=120)
+    limit: Optional[int] = Field(default=50, ge=1, le=200)
     media_type: Optional[str] = None
 
 class SearchTimeRequest(BaseModel):
-    start_date: str # YYYY-MM-DD
-    end_date: str # YYYY-MM-DD
-    limit: Optional[int] = 100
+    start_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    limit: Optional[int] = Field(default=100, ge=1, le=500)
     media_type: Optional[str] = None
 
 class SearchRecentRequest(BaseModel):
-    limit: Optional[int] = 50
+    limit: Optional[int] = Field(default=50, ge=1, le=200)
     media_type: Optional[str] = None
 
 class DownloadBatchRequest(BaseModel):
-    message_ids: List[int]
+    message_ids: List[int] = Field(min_length=1, max_length=500)
     channel_id: Optional[str] = None
-    formats: Optional[List[str]] = None
+    formats: Optional[List[str]] = Field(default=None, max_length=50)
 
 class LoginSendCodeRequest(BaseModel):
-    phone: str
+    phone: str = Field(min_length=6, max_length=32, pattern=r"^\+?[0-9][0-9 ()-]*$")
 
 class LoginSignInRequest(BaseModel):
-    code: str
+    code: str = Field(min_length=2, max_length=32)
 
 class ProxyConfigRequest(BaseModel):
-    scheme: str = "http"
-    hostname: str = "127.0.0.1"
-    port: int = 1080
+    scheme: str = Field(default="http", pattern=r"^(http|socks5)$")
+    hostname: str = Field(default="127.0.0.1", min_length=1, max_length=255)
+    port: int = Field(default=1080, ge=1, le=65535)
     username: Optional[str] = None
     password: Optional[str] = None
     rdns: bool = True
@@ -51,15 +53,15 @@ class ConfigResponse(BaseModel):
     media_types: List[str]
 
 class TaskIdRequest(BaseModel):
-    task_id: str
+    task_id: str = Field(min_length=1, max_length=200)
 
 class BatchDeleteRequest(BaseModel):
-    task_ids: List[str]
+    task_ids: List[str] = Field(min_length=1, max_length=500)
 
 class HistoryDeleteRequest(BaseModel):
-    ids: List[int]
+    ids: List[int] = Field(min_length=1, max_length=500)
 
 class ForwardRequest(BaseModel):
-    from_channel_id: str
-    message_ids: List[int]
-    to_chat_id: str
+    from_channel_id: str = Field(min_length=1, max_length=100)
+    message_ids: List[int] = Field(min_length=1, max_length=500)
+    to_chat_id: str = Field(min_length=1, max_length=100)

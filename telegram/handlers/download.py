@@ -1,10 +1,9 @@
-from telethon import events
 from core.database import db_manager
 from downloader.manager import download_manager
+from telegram import search as search_module
 from telegram.search_cache import search_cache
 from telegram.state_manager import state_manager
-from telegram import search as search_module
-from telegram.client import tg_clients
+
 
 async def batch_download_handler(event, arg=None):
     last_results = search_cache.get(event.chat_id)

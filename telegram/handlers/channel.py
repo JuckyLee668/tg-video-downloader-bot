@@ -1,7 +1,7 @@
 ﻿from core.database import db_manager
-from telegram.state_manager import state_manager
 from telegram import search as search_module
 from telegram.client import tg_clients
+from telegram.state_manager import state_manager
 
 
 async def connect_channel_handler(event, arg=None):

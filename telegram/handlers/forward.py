@@ -1,8 +1,8 @@
-from telethon import events
+from downloader.manager import download_manager
 from telegram.client import tg_clients
 from telegram.search_cache import search_cache
 from telegram.state_manager import state_manager
-from downloader.manager import download_manager
+
 
 async def batch_forward_handler(event, arg=None):
     # arg: "target indices" or "target"

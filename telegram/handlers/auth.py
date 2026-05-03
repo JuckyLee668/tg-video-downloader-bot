@@ -1,7 +1,7 @@
-from telethon import events
 from core.config import config
 from telegram.client import tg_clients
 from telegram.state_manager import state_manager
+
 
 async def auth_status_handler(event, arg=None):
     user_cfg_ok = bool(config.user_api.api_id and config.user_api.api_hash)

@@ -1,7 +1,8 @@
-from telethon import events
+import aiosqlite
+
 from core.database import db_manager
 from telegram.handlers.utils import format_size
-import aiosqlite
+
 
 async def start_handler(event, arg=None):
     return await help_handler(event)

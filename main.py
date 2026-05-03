@@ -1,72 +1,61 @@
 import asyncio
-import uvicorn
-import sys
 import os
+import sys
+
+import uvicorn
 from loguru import logger
 
-# Add parent directory to sys.path to allow running from within app/
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.config import config
 from core.database import db_manager
+from downloader.manager import download_manager
 from telegram.client import tg_clients
 from telegram.handlers import setup_handlers
-from downloader.manager import download_manager
 from web.server import create_app
 
+
 async def main():
-    logger.info("正在启动 Telegram 媒体下载器 Python 版...")
-    
-    # 1. Initialize Database
+    logger.info("Starting Telegram media downloader")
+
     await db_manager.init()
-    
-    # 2. Initialize Telegram Clients
     await tg_clients.init()
-    
-    # 3. Setup Handlers
     setup_handlers()
-    
-    # 4. Initialize Download Manager
     await download_manager.init()
-    
-    # 5. Start Web Server
+
     app = create_app()
     web_api_key = (os.getenv("WEB_API_KEY") or "").strip()
-    web_host = "0.0.0.0" if web_api_key else "127.0.0.1"
-    if web_api_key:
-        logger.warning("Detected WEB_API_KEY, Web server will listen on 0.0.0.0 (external access enabled).")
-    else:
-        logger.info("WEB_API_KEY not set, Web server will listen on 127.0.0.1 (local only).")
+    if config.web_host == "0.0.0.0" and not web_api_key:
+        logger.warning("Web server is externally reachable without WEB_API_KEY; use local mode only.")
 
-    server_config = uvicorn.Config(app, host=web_host, port=8000, log_level="info")
+    server_config = uvicorn.Config(app, host=config.web_host, port=config.web_port, log_level="info")
     server = uvicorn.Server(server_config)
-    
-    # Run everything
+
     try:
-        tasks = [
-            server.serve(),
-        ]
+        tasks = [server.serve()]
         if tg_clients.bot_client:
             tasks.append(tg_clients.bot_client.run_until_disconnected())
-        
-        # Only run user client if it's already authorized
+
         if tg_clients.user_client:
-            is_authorized = await tg_clients.user_client.is_user_authorized()
-            if is_authorized:
+            if await tg_clients.user_client.is_user_authorized():
                 tasks.append(tg_clients.user_client.run_until_disconnected())
             else:
-                logger.warning("Telegram 用户客户端尚未登录，仅启动 Bot 客户端")
-            
+                logger.warning("Telegram user client is not logged in; bot client only")
+
         await asyncio.gather(*tasks)
     except (asyncio.CancelledError, KeyboardInterrupt):
-        logger.info("正在关闭应用...")
+        logger.info("Shutting down application")
     finally:
-        # Cleanup
+        for worker in download_manager.worker_tasks:
+            worker.cancel()
+        if download_manager.worker_tasks:
+            await asyncio.gather(*download_manager.worker_tasks, return_exceptions=True)
         if tg_clients.bot_client:
             await tg_clients.bot_client.disconnect()
         if tg_clients.user_client:
             await tg_clients.user_client.disconnect()
-        logger.info("应用已关闭")
+        logger.info("Application stopped")
+
 
 if __name__ == "__main__":
     try:

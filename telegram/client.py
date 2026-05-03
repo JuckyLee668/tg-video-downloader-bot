@@ -1,11 +1,11 @@
 import os
-import asyncio
 from typing import Optional
+
+from loguru import logger
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from core.config import config, ProxyConfig
-from loguru import logger
 
+from core.config import ProxyConfig, config
 from telegram.search import init_searcher
 
 # Telethon connection tuning to improve stability behind proxies

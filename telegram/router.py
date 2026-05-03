@@ -1,13 +1,15 @@
 import re
-from telethon import events
+
 from loguru import logger
-from telegram.state_manager import state_manager
-from telegram.client import tg_clients
-from downloader.manager import download_manager
+from telethon import events
+
 from core.config import config
+from downloader.manager import download_manager
+from telegram.client import tg_clients
 
 # 导入所有模块化的 handler
-from telegram.handlers import system, auth, search, download, channel, forward
+from telegram.handlers import auth, channel, download, forward, search, system
+from telegram.state_manager import state_manager
 
 # 命令映射表
 COMMAND_MAP = {

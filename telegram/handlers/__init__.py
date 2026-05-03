@@ -1,7 +1,9 @@
-from telethon import events
 from loguru import logger
+from telethon import events
+
 from telegram.client import tg_clients
-from telegram.router import command_router, state_handler, media_auto_handler
+from telegram.router import command_router, media_auto_handler, state_handler
+
 
 def setup_handlers():
     """
@@ -45,7 +47,7 @@ def setup_handlers():
     try:
         loop = asyncio.get_event_loop()
         loop.create_task(_set_menu())
-    except:
+    except RuntimeError:
         pass
 
     # 2. 注册统一路由

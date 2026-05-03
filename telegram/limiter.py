@@ -1,7 +1,6 @@
-import time
 import asyncio
-from typing import Dict
-from loguru import logger
+import time
+
 
 class MessageRateLimiter:
     def __init__(self, max_per_second: int = 5, max_per_minute: int = 15):
