@@ -18,3 +18,5 @@ jobs:
         run: ruff check core downloader telegram web tests
       - name: Test
         run: pytest
+        env:
+          PYTHONPATH: ${{ github.workspace }}
