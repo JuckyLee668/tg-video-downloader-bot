@@ -1,11 +1,15 @@
 import asyncio
 import os
 import sys
+from pathlib import Path
 
 import uvicorn
 from loguru import logger
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Ensure local packages are importable both from source and from a bundled app.
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.config import config
 from core.database import db_manager
