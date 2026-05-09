@@ -1,5 +1,6 @@
 import json
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -14,13 +15,17 @@ class DatabaseManager:
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
 
+    @asynccontextmanager
     async def _get_db(self):
         """Create a database connection with proper timeout settings."""
         db = await aiosqlite.connect(self.db_path, timeout=30)
         await db.execute("PRAGMA busy_timeout = 30000")
         await db.execute("PRAGMA journal_mode = WAL")
         await db.execute("PRAGMA synchronous = NORMAL")
-        return db
+        try:
+            yield db
+        finally:
+            await db.close()
 
     async def init(self):
         async with self._get_db() as db:
