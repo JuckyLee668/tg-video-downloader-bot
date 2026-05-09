@@ -14,11 +14,16 @@ class DatabaseManager:
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
 
+    async def _get_db(self):
+        """Create a database connection with proper timeout settings."""
+        db = await aiosqlite.connect(self.db_path, timeout=30)
+        await db.execute("PRAGMA busy_timeout = 30000")
+        await db.execute("PRAGMA journal_mode = WAL")
+        await db.execute("PRAGMA synchronous = NORMAL")
+        return db
+
     async def init(self):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("PRAGMA journal_mode = WAL")
-            await db.execute("PRAGMA synchronous = NORMAL")
-            await db.execute("PRAGMA busy_timeout = 5000")
+        async with self._get_db() as db:
 
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS download_queue (
@@ -145,7 +150,7 @@ class DatabaseManager:
         task_id = f"{task.get('chat_id', 'unknown')}_{task.get('message_id', 'unknown')}"
         task_data = json.dumps(task.get("task_data", {}), ensure_ascii=False)
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             await db.execute("""
                 INSERT INTO download_queue
                 (task_id, chat_id, message_id, file_name, media_type, file_id, file_size,
@@ -185,7 +190,7 @@ class DatabaseManager:
         return task_id
 
     async def get_pending_tasks(self, limit: int = 100):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("""
                 SELECT * FROM download_queue
@@ -198,9 +203,8 @@ class DatabaseManager:
             return [dict(row) for row in rows]
 
     async def claim_next_task(self):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             db.row_factory = aiosqlite.Row
-            await db.execute("PRAGMA busy_timeout = 5000")
             await db.execute("BEGIN IMMEDIATE")
             try:
                 cursor = await db.execute("""
@@ -237,14 +241,14 @@ class DatabaseManager:
                 raise
 
     async def get_task_by_id(self, task_id: str):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM download_queue WHERE task_id = ?", (task_id,))
             row = await cursor.fetchone()
             return dict(row) if row else None
 
     async def update_task_status(self, task_id: str, status: str, error_message: str = None):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             if status == "downloading":
                 await db.execute("""
                     UPDATE download_queue
@@ -277,7 +281,7 @@ class DatabaseManager:
 
     async def update_task_progress(self, task_id: str, progress: int):
         progress = max(0, min(100, int(progress)))
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             await db.execute("""
                 UPDATE download_queue
                 SET progress = ?, updated_at = CURRENT_TIMESTAMP
@@ -286,7 +290,7 @@ class DatabaseManager:
             await db.commit()
 
     async def delete_download_task(self, task_id: str):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             await db.execute("DELETE FROM download_queue WHERE task_id = ?", (task_id,))
             await db.commit()
 
@@ -294,7 +298,7 @@ class DatabaseManager:
         task_id = task.get("task_id")
         task_data = self._json_dump(task.get("task_data", "{}"))
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             await db.execute("BEGIN TRANSACTION")
             try:
                 await self._upsert_history(db, task, completion_record, task_data)
@@ -310,7 +314,7 @@ class DatabaseManager:
     async def add_download_history(self, record: Dict[str, Any]):
         task_data = self._json_dump(record.get("task_data", {}))
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             await self._upsert_history(db, record, record, task_data)
             await self._increment_stats(db, record.get("file_size", 0), success=True)
             await db.commit()
@@ -381,7 +385,7 @@ class DatabaseManager:
         page = max(1, int(page))
         page_size = max(1, min(200, int(page_size)))
         offset = (page - 1) * page_size
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             db.row_factory = aiosqlite.Row
             query = "SELECT * FROM download_queue"
             params = []
@@ -413,7 +417,7 @@ class DatabaseManager:
         page = max(1, int(page))
         page_size = max(1, min(200, int(page_size)))
         offset = (page - 1) * page_size
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("""
                 SELECT * FROM download_history
@@ -427,7 +431,7 @@ class DatabaseManager:
 
     async def search_history(self, keyword: str, limit: int = 20):
         limit = max(1, min(100, int(limit)))
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("""
                 SELECT * FROM download_history
@@ -441,19 +445,19 @@ class DatabaseManager:
         clean_ids = [int(item) for item in ids if int(item) > 0]
         if not clean_ids:
             return 0
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             qmarks = ",".join("?" for _ in clean_ids)
             cursor = await db.execute(f"DELETE FROM download_history WHERE id IN ({qmarks})", clean_ids)
             await db.commit()
             return cursor.rowcount
 
     async def clear_history(self):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             await db.execute("DELETE FROM download_history")
             await db.commit()
 
     async def connect_channel(self, channel_id: str, username: str = None, title: str = None):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             await db.execute("""
                 INSERT INTO connected_channels (channel_id, username, title, last_connected_at)
                 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -466,19 +470,19 @@ class DatabaseManager:
             await db.commit()
 
     async def get_connected_channels(self):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM connected_channels ORDER BY last_connected_at DESC")
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
     async def delete_connected_channel(self, channel_id: str):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             await db.execute("DELETE FROM connected_channels WHERE channel_id = ?", (str(channel_id),))
             await db.commit()
 
     async def cancel_tasks(self, chat_id: str):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             await db.execute("""
                 UPDATE download_queue
                 SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
@@ -487,7 +491,7 @@ class DatabaseManager:
             await db.commit()
 
     async def cancel_all_tasks(self):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             await db.execute("""
                 UPDATE download_queue
                 SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
@@ -496,13 +500,13 @@ class DatabaseManager:
             await db.commit()
 
     async def clear_pending_tasks(self):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             cursor = await db.execute("DELETE FROM download_queue WHERE status != 'downloading'")
             await db.commit()
             return cursor.rowcount
 
     async def get_stats_summary(self):
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._get_db() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("""
                 SELECT

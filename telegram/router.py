@@ -286,10 +286,13 @@ async def media_auto_handler(event):
     if media_type not in config.media_types:
         return
 
+    import os
+    raw_name = event.message.file.name
+    file_name = raw_name if (raw_name and os.path.splitext(raw_name)[0]) else f"media_{event.message.id}"
     task = {
         'chat_id': chat_id,
         'message_id': event.message.id,
-        'file_name': event.message.file.name or f"media_{event.message.id}",
+        'file_name': file_name,
         'media_type': media_type,
         'file_size': event.message.file.size or 0,
         'task_data': {'requester_chat_id': chat_id}

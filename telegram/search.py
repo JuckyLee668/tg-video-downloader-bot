@@ -278,18 +278,20 @@ class ChannelSearcher:
         return count
 
     def _message_file_info(self, msg: Message):
+        raw_name = msg.file.name
+        safe_name = raw_name if (raw_name and os.path.splitext(raw_name)[0]) else None
         if msg.video:
-            return msg.file.name or f"video_{msg.id}.mp4", "video"
+            return safe_name or f"video_{msg.id}.mp4", "video"
         if msg.photo:
             return f"photo_{msg.id}.jpg", "photo"
         if msg.audio:
-            return msg.file.name or f"audio_{msg.id}.mp3", "audio"
+            return safe_name or f"audio_{msg.id}.mp3", "audio"
         if msg.voice:
-            return msg.file.name or f"voice_{msg.id}.ogg", "voice"
+            return f"voice_{msg.id}.ogg", "voice"
         if msg.gif:
-            return msg.file.name or f"animation_{msg.id}.gif", "animation"
+            return safe_name or f"animation_{msg.id}.gif", "animation"
         if msg.document:
-            return msg.file.name or f"doc_{msg.id}", "document"
+            return safe_name or f"doc_{msg.id}", "document"
         return f"media_{msg.id}", "unknown"
 
     async def join_channel(self, link: str):
