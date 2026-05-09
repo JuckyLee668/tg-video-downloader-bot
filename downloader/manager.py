@@ -76,19 +76,19 @@ class DownloadManager:
             if not download_client or not message_obj:
                 raise RuntimeError("No Telegram client could access this media message")
 
-            await self._download_if_needed(download_client, message_obj, save_path, task)
-            await self._forward_if_requested(tg_clients, save_path, task, task_data)
+            actual_path = await self._download_if_needed(download_client, message_obj, save_path, task)
+            await self._forward_if_requested(tg_clients, actual_path, task, task_data)
 
             # 自动上传到阿里云盘
             if config.aliyundrive_upload.enabled:
                 aliyundrive_uploader.enabled = True
                 aliyundrive_uploader.remote_path = config.aliyundrive_upload.remote_path
                 aliyundrive_uploader.delete_after_upload = config.aliyundrive_upload.delete_after_upload
-                await aliyundrive_uploader.upload(save_path)
+                await aliyundrive_uploader.upload(actual_path)
 
             delete_after = bool(task_data.get("delete_after_forward", False))
             await db_manager.complete_download_task(task, {
-                "download_path": "" if delete_after else str(save_path),
+                "download_path": "" if delete_after else str(actual_path),
                 "status": "completed",
             })
             await self._notify_success(tg_clients, task, task_data)
@@ -152,20 +152,31 @@ class DownloadManager:
 
         return download_client, message_obj
 
-    async def _download_if_needed(self, client, message, save_path: Path, task: Dict[str, Any]):
+    async def _download_if_needed(self, client, message, save_path: Path, task: Dict[str, Any]) -> Path:
         expected_size = int(task.get("file_size") or 0)
         if save_path.exists() and expected_size > 0 and save_path.stat().st_size == expected_size:
             logger.info(f"Existing complete file found, skipping download: {save_path.name}")
-            return
+            return save_path
 
-        await download_engine.download_via_telethon(
+        actual_path = await download_engine.download_via_telethon(
             client,
             message,
             str(save_path),
             self.create_progress_callback(task["task_id"]),
         )
-        if not save_path.exists() or save_path.stat().st_size == 0:
-            raise RuntimeError(f"Download finished but file is missing or empty: {save_path}")
+        if actual_path is None:
+            raise RuntimeError(f"Download returned None: {save_path}")
+
+        # Telethon's download_media may add extension; use the actual path returned
+        actual_path = Path(actual_path)
+        if not actual_path.exists() or actual_path.stat().st_size == 0:
+            raise RuntimeError(f"Download finished but file is missing or empty: {actual_path}")
+
+        # If Telethon saved to a different path than save_path, remove the original placeholder
+        if actual_path != save_path and save_path.exists() and save_path.stat().st_size == 0:
+            save_path.unlink(missing_ok=True)
+
+        return actual_path
 
     async def _forward_if_requested(self, tg_clients, save_path: Path, task: Dict[str, Any], task_data: Dict[str, Any]):
         forward_target = task_data.get("forward_target")

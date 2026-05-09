@@ -24,14 +24,13 @@ media_types:
 - video
 - voice
 - animation
-proxy: 
-  scheme: socks5
-  hostname: 127.0.0.1
-  port: 10808
-  username: null
-  password: null
-  rdns: true
+proxy: null
 save_path: ./downloads
+environment: local
+aliyundrive_upload:
+  enabled: true
+  remote_path: /video
+  delete_after_upload: true
 user_api:
   api_hash: ''
   api_id: ''
