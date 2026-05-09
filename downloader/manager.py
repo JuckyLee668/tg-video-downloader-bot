@@ -10,6 +10,7 @@ from telethon.tl.types import InputPeerChannel
 from core.config import config
 from core.database import db_manager
 from core.paths import safe_join_download_path
+from downloader.aliyundrive_uploader import aliyundrive_uploader
 from downloader.engine import download_engine
 
 
@@ -77,6 +78,13 @@ class DownloadManager:
 
             await self._download_if_needed(download_client, message_obj, save_path, task)
             await self._forward_if_requested(tg_clients, save_path, task, task_data)
+
+            # 自动上传到阿里云盘
+            if config.aliyundrive_upload.enabled:
+                aliyundrive_uploader.enabled = True
+                aliyundrive_uploader.remote_path = config.aliyundrive_upload.remote_path
+                aliyundrive_uploader.delete_after_upload = config.aliyundrive_upload.delete_after_upload
+                await aliyundrive_uploader.upload(save_path)
 
             delete_after = bool(task_data.get("delete_after_forward", False))
             await db_manager.complete_download_task(task, {
