@@ -1,8 +1,8 @@
 from downloader.manager import download_manager
 from telegram.client import tg_clients
+from telegram.handlers.utils import message_file_name, parse_indices
 from telegram.search_cache import search_cache
 from telegram.state_manager import state_manager
-from telegram.handlers.utils import parse_indices
 
 
 async def batch_forward_handler(event, arg=None):
@@ -21,15 +21,16 @@ async def batch_forward_handler(event, arg=None):
             indices_str = arg
         except Exception:
             await event.respond("📤 请输入序号范围（如 `1-5,8` 或 `all`）：")
-            state_manager.set(event.chat_id, {'command': 'bf', 'step': 'indices'})
+            await state_manager.set(event.chat_id, {'command': 'bf', 'step': 'indices'})
             return
 
-    state_manager.set(event.chat_id, {
+    await state_manager.set(event.chat_id, {
         'command': 'bf',
         'step': 'target',
         'indices': indices_str,
     })
     await event.respond("📤 请输入目标聊天（ID 或 @username）：")
+
 
 async def forward_link_handler(event, arg=None):
     # 处理 /forward [link]
@@ -37,7 +38,7 @@ async def forward_link_handler(event, arg=None):
     if not link:
         await event.respond("🔗 请提供消息链接。")
         return
-        
+
     try:
         msg = await tg_clients.user_client.get_messages(link)
         if msg and msg.media:
@@ -49,6 +50,7 @@ async def forward_link_handler(event, arg=None):
     except Exception as e:
         await event.respond(f"❌ 获取失败: {e}")
 
+
 async def do_bf(event, target, indices_str=None, delete_after=False):
     if not tg_clients.user_client or not await tg_clients.user_client.is_user_authorized():
         await event.respond("❌ 用户客户端未登录。")
@@ -56,7 +58,7 @@ async def do_bf(event, target, indices_str=None, delete_after=False):
 
     # 预校验转发目标是否有效
     try:
-        peer = await download_manager._resolve_forward_peer(tg_clients.user_client, target)
+        await download_manager._resolve_forward_peer(tg_clients.user_client, target)
     except Exception as e:
         await event.respond(f"❌ 目标无效: {e}\n请使用 @username 或聊天 ID（如 -1001234567890）")
         return
@@ -73,7 +75,7 @@ async def do_bf(event, target, indices_str=None, delete_after=False):
         indices = parse_indices(indices_str)
         for idx in sorted(indices):
             if 1 <= idx <= len(last_results):
-                messages_to_forward.append(last_results[idx-1])
+                messages_to_forward.append(last_results[idx - 1])
 
     if not messages_to_forward:
         await event.respond("❌ 未找到匹配消息。")
@@ -89,9 +91,9 @@ async def do_bf(event, target, indices_str=None, delete_after=False):
 
     added = 0
     for msg in messages_to_forward:
-        file_name = _get_file_name(msg)
+        file_name = message_file_name(msg)
         display_name = f"[DEL]{file_name}" if delete_after else file_name
-        
+
         task = {
             'chat_id': str(event.chat_id),
             'message_id': msg.id,
@@ -114,11 +116,3 @@ async def do_bf(event, target, indices_str=None, delete_after=False):
         added += 1
 
     await event.respond(f"📥 已添加 {added} 个转发任务到队列。")
-
-def _get_file_name(msg):
-    if msg.file and msg.file.name:
-        return msg.file.name
-    
-    mime = getattr(msg.file, 'mime_type', '') if msg.file else ''
-    ext = '.mp4' if 'video' in mime else '.mp3' if 'audio' in mime else '.jpg' if 'image' in mime else ''
-    return f"media_{msg.id}{ext}"

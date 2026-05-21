@@ -1,3 +1,5 @@
+import asyncio
+
 from loguru import logger
 from telethon import events
 
@@ -44,7 +46,6 @@ def setup_handlers():
         except Exception as e:
             logger.error(f"设置菜单失败: {e}")
 
-    import asyncio
     try:
         loop = asyncio.get_event_loop()
         loop.create_task(_set_menu())

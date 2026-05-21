@@ -1,3 +1,4 @@
+import asyncio
 import hmac
 import os
 from datetime import datetime
@@ -15,6 +16,7 @@ from downloader.manager import download_manager
 from telegram import search
 from telegram.client import tg_clients
 from telegram.handlers.thumbnail import ensure_thumb_dir, generate_thumbnails
+from telegram.handlers.utils import format_size, message_file_name
 from web.api_models import (
     BatchDeleteRequest,
     ConnectRequest,
@@ -250,7 +252,6 @@ class ThumbnailRequest(BaseModel):
 @router.post("/search/thumbnails/start")
 async def start_thumbnail_gen(req: ThumbnailRequest):
     """异步启动缩略图生成，返回 task_id"""
-    import asyncio
     import uuid
 
     if not tg_clients.user_client or not await tg_clients.user_client.is_user_authorized():
@@ -265,7 +266,7 @@ async def start_thumbnail_gen(req: ThumbnailRequest):
 
             # Fetch messages and keep index mapping back to request items
             msg_items: list[tuple] = []  # [(msg, req_item), ...]
-            for idx, item in enumerate(req.messages):
+            for _idx, item in enumerate(req.messages):
                 try:
                     peer = await tg_clients.user_client.get_input_entity(int(item["chat_id"]))
                     result = await tg_clients.user_client.get_messages(peer, ids=item["id"])
@@ -283,7 +284,7 @@ async def start_thumbnail_gen(req: ThumbnailRequest):
 
             # generate_thumbnails preserves input order
             msgs_only = [m for m, _ in msg_items]
-            results = await generate_thumbnails(tg_clients.user_client, msgs_only, max_thumbs=50)
+            results = await generate_thumbnails(tg_clients.user_client, msgs_only, max_thumbs=200)
 
             thumbs = []
             # results[i] corresponds to msgs_only[i] corresponds to msg_items[i]
@@ -481,7 +482,7 @@ async def forward_messages(req: ForwardRequest):
             if not msg or not msg.media:
                 continue
 
-            file_name = _message_file_name(msg)
+            file_name = message_file_name(msg)
             task = {
                 "chat_id": "web_request",
                 "message_id": str(msg.id),
@@ -497,6 +498,7 @@ async def forward_messages(req: ForwardRequest):
                     "delete_after_forward": False,
                     "caption": msg.message or "",
                     "access_hash": getattr(msg.chat, "access_hash", None),
+                    "requester_chat_id": "web_request",
                 },
             }
             await download_manager.add_task(task)
@@ -508,13 +510,6 @@ async def forward_messages(req: ForwardRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-
-def _message_file_name(msg) -> str:
-    if msg.file and msg.file.name:
-        return msg.file.name
-    mime = getattr(msg.file, "mime_type", "") if msg.file else ""
-    ext = ".mp4" if "video" in mime else ".mp3" if "audio" in mime else ".jpg" if "image" in mime else ""
-    return f"media_{msg.id}{ext}"
 
 
 # ── 本地文件管理 ──────────────────────────────────────────
@@ -537,7 +532,7 @@ async def get_local_files():
         result.append({
             "name": f.name,
             "size": stat.st_size,
-            "size_formatted": _format_bytes(stat.st_size),
+            "size_formatted": format_size(stat.st_size),
             "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
             "is_del_marked": f.name.startswith("[DEL]"),
         })
@@ -573,7 +568,7 @@ async def delete_local_files(req: FileDeleteRequest):
                 errors.append(f"{name}: not found")
         except Exception as e:
             errors.append(f"{name}: {e}")
-    return {"status": "success", "deleted": deleted, "freed": freed, "freed_formatted": _format_bytes(freed), "errors": errors}
+    return {"status": "success", "deleted": deleted, "freed": freed, "freed_formatted": format_size(freed), "errors": errors}
 
 
 @router.post("/storage/clear")
@@ -587,13 +582,37 @@ async def clear_local_files():
     freed = int(sum(f.stat().st_size for f in files))
     for f in files:
         f.unlink()
-    logger.info(f"Web UI cleared all local files, freed {_format_bytes(freed)}")
-    return {"status": "success", "deleted": len(files), "freed": freed, "freed_formatted": _format_bytes(freed)}
+    logger.info(f"Web UI cleared all local files, freed {format_size(freed)}")
+    return {"status": "success", "deleted": len(files), "freed": freed, "freed_formatted": format_size(freed)}
 
 
-def _format_bytes(size: int) -> str:
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if size < 1024:
-            return f"{size:.2f} {unit}"
-        size /= 1024
-    return f"{size:.2f} PB"
+# ── 缩略图缓存管理 ────────────────────────────────────────
+
+@router.get("/storage/thumbs")
+async def get_thumb_cache():
+    """查看缩略图缓存状态"""
+    from telegram.handlers.thumbnail import THUMB_DIR
+
+    if not THUMB_DIR.exists():
+        return {"total_files": 0, "total_size": 0, "size_formatted": "0 B"}
+
+    files = [f for f in THUMB_DIR.iterdir() if f.is_file()]
+    total = len(files)
+    size = int(sum(f.stat().st_size for f in files))
+    return {"total_files": total, "total_size": size, "size_formatted": format_size(size)}
+
+
+@router.post("/storage/thumbs/clear")
+async def clear_thumb_cache():
+    """清空缩略图缓存"""
+    from telegram.handlers.thumbnail import THUMB_DIR
+
+    if not THUMB_DIR.exists():
+        return {"status": "success", "deleted": 0, "freed": 0}
+
+    files = [f for f in THUMB_DIR.iterdir() if f.is_file()]
+    freed = int(sum(f.stat().st_size for f in files))
+    for f in files:
+        f.unlink()
+    logger.info(f"Web UI cleared thumb cache: {len(files)} files, freed {format_size(freed)}")
+    return {"status": "success", "deleted": len(files), "freed": freed, "freed_formatted": format_size(freed)}

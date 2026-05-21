@@ -64,12 +64,12 @@ class Config(BaseModel):
         # We need to be careful with .local override, but usually we save to the original if possible
         if os.path.exists("config.local.yaml"):
             config_path = "config.local.yaml"
-            
+
         data = self.model_dump(mode='json')
-        
+
         # Don't save things that should stay in environment
         # But for simplicity in this project, we might just save everything if provided via API
-        
+
         with open(config_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(data, f, allow_unicode=True, default_flow_style=False)
         logger.info(f"配置已保存到 {config_path}")
@@ -83,11 +83,11 @@ def load_config(config_path: str = "config.yaml") -> Config:
             data = yaml.safe_load(f) or {}
     else:
         data = {}
-    
+
     # Override with environment variables
     if os.getenv("BOT_TOKEN"):
         data["bot_token"] = os.getenv("BOT_TOKEN")
-    
+
     if "user_api" not in data:
         data["user_api"] = {}
 

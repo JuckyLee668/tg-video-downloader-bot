@@ -262,6 +262,18 @@
                     </table>
                 </div>
             </section>
+
+            <!-- Thumb Cache Section -->
+            <section class="bg-white p-6 rounded-lg shadow">
+                <div class="flex items-center justify-between mb-4 border-b pb-2">
+                    <h2 class="text-xl font-semibold">🖼️ Thumbnail Cache</h2>
+                    <div class="flex gap-2 items-center">
+                        <span id="thumb-cache-summary" class="text-xs text-gray-500"></span>
+                        <button onclick="clearThumbCache()" class="text-xs bg-red-50 text-red-600 px-3 py-1 rounded border border-red-100 hover:bg-red-100">Clear Cache</button>
+                    </div>
+                </div>
+                <div id="thumb-cache-info" class="text-sm text-gray-500 italic text-center py-4">Loading...</div>
+            </section>
         </div>
     </div>
 
@@ -490,7 +502,7 @@
         let currentThumbTaskId = null;
 
         async function startThumbnails(messages) {
-            const mediaMsgs = messages.filter(m => m.media_type === 'video' || m.media_type === 'photo').slice(0, 50);
+            const mediaMsgs = messages.filter(m => m.media_type === 'video' || m.media_type === 'photo');
             if (!mediaMsgs.length) return;
             
             try {
@@ -499,14 +511,14 @@
                     body: JSON.stringify({ messages: mediaMsgs.map(m => ({ id: m.id, chat_id: m.chat_id, media_type: m.media_type })) })
                 });
                 currentThumbTaskId = res.task_id;
-                pollThumbnails(res.task_id);
+                pollThumbnails(res.task_id, mediaMsgs.length);
             } catch (err) {
                 console.error('Failed to start thumbnails:', err);
             }
         }
 
-        async function pollThumbnails(taskId) {
-            const maxAttempts = 120;
+        async function pollThumbnails(taskId, totalCount) {
+            const maxAttempts = 300; // 300s = 5 min timeout for many thumbnails
             for (let i = 0; i < maxAttempts; i++) {
                 try {
                     const res = await fetchApi('/search/thumbnails/' + taskId);
@@ -526,7 +538,14 @@
                     });
                     
                     if (res.status === 'done' || res.status === 'error') {
-                        console.log('Thumbnails generation complete:', res.status);
+                        console.log('Thumbnails generation complete:', res.status, 'got', res.thumbs.length, '/', totalCount);
+                        // Replace remaining "..." placeholders with "N/A"
+                        document.querySelectorAll('[id^="thumb-"]').forEach(el => {
+                            if (el.textContent === '...') {
+                                el.textContent = 'N/A';
+                                el.className = 'w-12 h-12 bg-gray-100 rounded flex items-center justify-center text-[8px] text-gray-400';
+                            }
+                        });
                         break;
                     }
                     
@@ -735,11 +754,27 @@
             loadStorage();
         }
 
-        // Patch showTab to load storage data
+        // ── Thumb Cache ────────────────────────────────────
+        async function loadThumbCache() {
+            const data = await fetchApi('/storage/thumbs');
+            document.getElementById('thumb-cache-summary').innerText = `${data.total_files} files, ${data.size_formatted}`;
+            document.getElementById('thumb-cache-info').innerHTML = data.total_files > 0
+                ? `<span class="text-gray-700">${data.total_files} files, <b>${data.size_formatted}</b> total</span>`
+                : '<span class="text-gray-400 italic">Empty</span>';
+        }
+
+        async function clearThumbCache() {
+            if (!confirm('Clear thumbnail cache? This will regenerate on next search.')) return;
+            const res = await fetchApi('/storage/thumbs/clear', { method: 'POST' });
+            alert(`Cleared ${res.deleted} thumbnail files, freed ${res.freed_formatted}`);
+            loadThumbCache();
+        }
+
+        // Patch showTab to load storage + thumb data
         const _origShowTab = showTab;
         showTab = function(tab) {
             _origShowTab(tab);
-            if (tab === 'storage') loadStorage();
+            if (tab === 'storage') { loadStorage(); loadThumbCache(); }
             if (tab === 'history') loadHistory();
         };
 

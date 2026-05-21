@@ -172,7 +172,7 @@ async def command_router(event):
     except Exception as e:
         logger.exception(f"Error in command /{cmd}: {e}")
         await event.respond(f"❌ 执行命令时出错: {e}")
-    
+
     # 停止后续 handler 触发 (Telethon 机制)
     raise events.StopPropagation
 
@@ -183,7 +183,7 @@ async def state_handler(event):
     if not event.text or event.text.startswith('/'):
         return
 
-    state = state_manager.get(event.chat_id)
+    state = await state_manager.get(event.chat_id)
     if not state:
         return
 
@@ -202,74 +202,74 @@ async def state_handler(event):
                 phone = event.text.strip().replace(' ', '')
                 await tg_clients.send_code(phone)
                 await event.respond("📩 验证码已发送！请输入收到的验证码（注意：每一位数字减一后输入）。")
-                state_manager.update(event.chat_id, step='code')
+                await state_manager.update(event.chat_id, step='code')
             elif step == 'code':
                 raw_code = event.text.strip()
                 transformed_code = "".join(str((int(d) + 1) % 10) if d.isdigit() else d for d in raw_code)
                 await tg_clients.sign_in(transformed_code)
                 await event.respond("🎉 登录成功！")
-                state_manager.clear(event.chat_id)
+                await state_manager.clear(event.chat_id)
 
         # --- CHANNEL CONNECT ---
         elif cmd == 'cc':
-            state_manager.clear(event.chat_id)
+            await state_manager.clear(event.chat_id)
             await channel.connect_channel_handler(event, event.text.strip())
 
         # --- SEARCH KEYWORD ---
         elif cmd == 'csk':
-            state_manager.clear(event.chat_id)
+            await state_manager.clear(event.chat_id)
             await search.search_keyword_handler(event, event.text.strip())
 
         # --- SEARCH HISTORY ---
         elif cmd == 'sh':
-            state_manager.clear(event.chat_id)
+            await state_manager.clear(event.chat_id)
             await search.search_history_handler(event, event.text.strip())
 
         # --- SEARCH TIME (CST) ---
         elif cmd == 'cst':
             if step == 'start':
-                state_manager.update(event.chat_id, step='end', start=event.text.strip())
+                await state_manager.update(event.chat_id, step='end', start=event.text.strip())
                 await event.respond("⌛ 请输入结束日期 (YYYY-MM-DD)：")
             elif step == 'end':
                 start = state.get('start')
                 end = event.text.strip()
-                state_manager.clear(event.chat_id)
+                await state_manager.clear(event.chat_id)
                 await search.do_cst(event, start, end)
 
         # --- BATCH DOWNLOAD FORMATS (BDF) ---
         elif cmd == 'bdf':
             if step == 'formats':
                 formats_str = event.text.strip()
-                state_manager.update(event.chat_id, step='indices', formats=formats_str)
+                await state_manager.update(event.chat_id, step='indices', formats=formats_str)
                 await event.respond("📤 请输入需要下载的序号范围（如 `1-5,8` 或 `all`）：")
             elif step == 'indices':
                 formats_str = state.get('formats')
                 indices = None if event.text.strip().lower() == 'all' else event.text.strip()
-                state_manager.clear(event.chat_id)
+                await state_manager.clear(event.chat_id)
                 await download.do_bdf(event, formats_str, indices)
 
         # --- BATCH FORWARD (BF) ---
         elif cmd == 'bf':
             if step == 'indices':
                 indices = 'all' if event.text.strip().lower() == 'all' else event.text.strip()
-                state_manager.update(event.chat_id, step='target', indices=indices)
+                await state_manager.update(event.chat_id, step='target', indices=indices)
                 await event.respond("📤 请输入目标聊天（ID 或 @username）：")
             elif step == 'target':
                 target = event.text.strip()
-                state_manager.update(event.chat_id, step='delete', target=target)
+                await state_manager.update(event.chat_id, step='delete', target=target)
                 await event.respond("🗑️ 转发后是否删除？回复 yes/no。")
             elif step == 'delete':
                 target = state.get('target')
                 indices = state.get('indices')
                 answer = event.text.strip().lower()
                 delete_after = False if answer in ['no', 'n', '0'] else True
-                state_manager.clear(event.chat_id)
+                await state_manager.clear(event.chat_id)
                 await forward.do_bf(event, target, indices, delete_after)
 
     except Exception as e:
         logger.exception(f"State handler error: {e}")
         await event.respond(f"❌ 流程处理出错: {e}")
-        state_manager.clear(event.chat_id)
+        await state_manager.clear(event.chat_id)
 
     raise events.StopPropagation
 

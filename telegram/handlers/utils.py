@@ -1,48 +1,77 @@
-import math
+from datetime import datetime
 
-from telegram import search
-from telegram.client import tg_clients
+
+def parse_indices(indices_str: str) -> set[int]:
+    """解析序号范围字符串，如 '1-3, 5' → {1,2,3,5} 或 'all' → 空集"""
+    if not indices_str or indices_str.strip().lower() == "all":
+        return set()
+
+    indices: set[int] = set()
+    parts = indices_str.replace("，", ",").split(",")
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            try:
+                start, end = map(int, part.split("-", 1))
+                indices.update(range(start, end + 1))
+            except ValueError:
+                raise ValueError(f"Invalid range: {part}") from None
+        else:
+            try:
+                indices.add(int(part))
+            except ValueError:
+                raise ValueError(f"Invalid index: {part}") from None
+    return indices
+
+
+def format_size(size_bytes: int) -> str:
+    """字节数 → 人类可读大小字符串"""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size_bytes < 1024:
+            return f"{size_bytes:.2f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.2f} PB"
+
+
+def format_time(timestamp: float) -> str:
+    """时间戳 → 月-日 时:分 字符串"""
+    return datetime.fromtimestamp(timestamp).strftime("%m-%d %H:%M")
+
+
+def message_file_name(msg) -> str:
+    """从 Telegram Message 对象提取文件名"""
+    if msg.file and msg.file.name:
+        return msg.file.name
+    mime = getattr(msg.file, "mime_type", "") if msg.file else ""
+    if "video" in mime:
+        ext = ".mp4"
+    elif "audio" in mime:
+        ext = ".mp3"
+    elif "image" in mime:
+        ext = ".jpg"
+    else:
+        ext = ""
+    return f"media_{msg.id}{ext}"
 
 
 async def ensure_searcher(event=None):
-    """
-    统一确保 Searcher 已初始化并连接
-    """
+    """确保 Searcher 已初始化并连接"""
+    from telegram.client import tg_clients
+
     if not tg_clients.user_client or not await tg_clients.user_client.is_user_authorized():
         if event:
-            await event.respond("❌ 用户客户端未登录。请先发送 `/login` 进行登录。")
+            await event.respond("❌ 请先使用 /login 登录用户账号。")
         return False
 
-    if not search.searcher:
-        from telegram.search import init_searcher
+    from telegram.search import init_searcher, searcher
+
+    if not searcher:
         init_searcher(tg_clients.user_client)
 
-    if not await search.searcher.ensure_connected():
+    if not await searcher.ensure_connected():
         if event:
-            await event.respond("❌ 请先使用 `/cc` 连接一个频道。")
+            await event.respond("❌ 请先使用 /cc 连接要搜索的频道。")
         return False
-        
     return True
-
-def parse_indices(arg: str) -> set[int]:
-    """解析序号范围字符串（如 '1-3, 5' 或 '1，3-5'），返回索引集合"""
-    indices = set()
-    arg_clean = arg.replace('，', ',')
-    parts = arg_clean.split(',')
-    for part in parts:
-        part = part.strip()
-        if '-' in part:
-            start_str, end_str = part.split('-')
-            indices.update(range(int(start_str), int(end_str) + 1))
-        elif part.isdigit():
-            indices.add(int(part))
-    return indices
-
-def format_size(size_bytes):
-    if size_bytes == 0:
-        return "0B"
-    size_name = ("B", "KB", "MB", "GB", "TB")
-    i = int(math.floor(math.log(size_bytes, 1024)))
-    p = math.pow(1024, i)
-    s = round(size_bytes / p, 2)
-    return f"{s} {size_name[i]}"

@@ -7,7 +7,7 @@ async def auth_status_handler(event, arg=None):
     user_cfg_ok = bool(config.user_api.api_id and config.user_api.api_hash)
     user_client_state = "未创建"
     user_authorized = False
-    
+
     if tg_clients.user_client:
         try:
             await tg_clients.user_client.connect()
@@ -34,4 +34,4 @@ async def auth_status_handler(event, arg=None):
 
 async def login_handler(event, arg=None):
     await event.respond("🔑 请输入您的手机号 (国际格式，如 +86138...)：")
-    state_manager.set(event.chat_id, {'command': 'login', 'step': 'phone'})
+    await state_manager.set(event.chat_id, {'command': 'login', 'step': 'phone'})

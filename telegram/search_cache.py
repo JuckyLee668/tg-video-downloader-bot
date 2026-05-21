@@ -27,12 +27,12 @@ class SearchCache:
         item = self.cache.get(chat_id)
         if not item:
             return []
-        
+
         # 检查 TTL
         if time.time() - item["timestamp"] > self.ttl:
             del self.cache[chat_id]
             return []
-            
+
         return item["results"]
 
     def clear(self, chat_id: int):

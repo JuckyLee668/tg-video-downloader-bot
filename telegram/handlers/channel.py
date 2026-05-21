@@ -1,4 +1,4 @@
-﻿from core.database import db_manager
+from core.database import db_manager
 from telegram import search as search_module
 from telegram.client import tg_clients
 from telegram.state_manager import state_manager
@@ -8,7 +8,7 @@ async def connect_channel_handler(event, arg=None):
     identifier = (arg or '').strip()
     if not identifier:
         await event.respond("请输入要连接的频道用户名或邀请链接（例如 `@channel` 或 `https://t.me/...`）：")
-        state_manager.set(event.chat_id, {'command': 'cc'})
+        await state_manager.set(event.chat_id, {'command': 'cc'})
         return
 
     # /cc should only require user login; it must not require an already-connected channel.

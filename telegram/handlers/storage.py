@@ -1,11 +1,9 @@
-import os
-import shutil
 from pathlib import Path
 
 from loguru import logger
 
-from core import paths
 from core.config import config
+from telegram.handlers.utils import format_size, format_time
 
 
 async def storage_handler(event, arg: str | None):
@@ -13,8 +11,15 @@ async def storage_handler(event, arg: str | None):
     /files  - 列出本地下载目录中的所有文件
     /files delete <pattern> - 删除匹配的文件（如 /files delete [DEL]）
     /files clear - 清空所有本地下载文件
+    /files thumbs - 查看缩略图缓存状态
+    /files thumbs clear - 清空缩略图缓存
     """
     downloads_dir = Path(config.save_path).expanduser().resolve()
+
+    # 缩略图缓存子命令
+    if arg and arg.strip().startswith("thumbs"):
+        return await _thumbs_handler(event, arg.strip())
+
     if not downloads_dir.exists():
         await event.respond("📂 下载目录不存在。")
         return
@@ -26,7 +31,7 @@ async def storage_handler(event, arg: str | None):
     )
 
     total_size = sum(f.stat().st_size for f in files)
-    total_size_str = _fmt_size(total_size)
+    total_size_str = format_size(total_size)
 
     if not arg:
         # 列出文件
@@ -37,8 +42,8 @@ async def storage_handler(event, arg: str | None):
         lines = [f"📂 **本地下载文件** ({len(files)} 个, 共 {total_size_str})"]
         for i, f in enumerate(files, 1):
             stat = f.stat()
-            size = _fmt_size(stat.st_size)
-            mtime = _fmt_time(stat.st_mtime)
+            size = format_size(stat.st_size)
+            mtime = format_time(stat.st_mtime)
             marker = "🗑️ " if f.name.startswith("[DEL]") else ""
             lines.append(f"{i}. {marker}{f.name}  _{size}, {mtime}_")
         lines.append("")
@@ -66,7 +71,7 @@ async def storage_handler(event, arg: str | None):
             logger.info(f"Deleted local file: {f.name}")
 
         await event.respond(
-            f"🗑️ 已删除 {len(matched)} 个匹配 `{pattern}` 的文件，释放 {_fmt_size(freed)}。"
+            f"🗑️ 已删除 {len(matched)} 个匹配 `{pattern}` 的文件，释放 {format_size(freed)}。"
         )
 
     elif action == "clear":
@@ -77,26 +82,45 @@ async def storage_handler(event, arg: str | None):
         freed = sum(f.stat().st_size for f in files)
         for f in files:
             f.unlink()
-        logger.info(f"Cleared all local files, freed {_fmt_size(freed)}")
+        logger.info(f"Cleared all local files, freed {format_size(freed)}")
 
-        await event.respond(f"🗑️ 已清空所有本地文件，释放 {_fmt_size(freed)}。")
+        await event.respond(f"🗑️ 已清空所有本地文件，释放 {format_size(freed)}。")
 
     else:
-        await event.respond("❌ 用法：`/files`、`/files delete <关键词>` 或 `/files clear`")
+        await event.respond("❌ 用法：`/files`、`/files delete <关键词>`、`/files clear`、`/files thumbs`")
 
 
-def _fmt_size(size_bytes: int) -> str:
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if size_bytes < 1024:
-            return f"{size_bytes:.2f} {unit}"
-        size_bytes /= 1024
-    return f"{size_bytes:.2f} PB"
+async def _thumbs_handler(event, arg: str):
+    """处理缩略图缓存子命令"""
+    from telegram.handlers.thumbnail import THUMB_DIR
 
+    parts = arg.strip().split()
+    sub = parts[1] if len(parts) > 1 else ""
 
-def _fmt_time(timestamp: float) -> str:
-    from datetime import datetime
+    if not THUMB_DIR.exists():
+        await event.respond("🖼️ 缩略图缓存目录不存在。")
+        return
 
-    return datetime.fromtimestamp(timestamp).strftime("%m-%d %H:%M")
+    files = list(THUMB_DIR.iterdir())
+    total = len(files)
+    size = sum(f.stat().st_size for f in files if f.is_file())
+
+    if sub == "clear":
+        for f in files:
+            if f.is_file():
+                f.unlink()
+        logger.info(f"Cleared {total} thumb cache files, freed {format_size(size)}")
+        await event.respond(f"🗑️ 已清空 {total} 个缩略图缓存，释放 {format_size(size)}。")
+        return
+
+    # 默认：显示缓存状态
+    await event.respond(
+        f"🖼️ **缩略图缓存**\n"
+        f"• 文件数: {total}\n"
+        f"• 占用: {format_size(size)}\n"
+        f"• 缓存目录: `{THUMB_DIR}`\n\n"
+        f"💡 使用 `/files thumbs clear` 清空缓存"
+    )
 
 
 def _chunk_lines(lines: list[str], chunk_size: int):

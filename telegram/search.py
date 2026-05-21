@@ -141,9 +141,8 @@ class ChannelSearcher:
         if not all_matches:
             return []
 
-        all_messages = dict(all_matches)
-        await self._include_album_siblings(all_messages, list(all_matches.values()))
-        return sorted(all_messages.values(), key=lambda item: item.date, reverse=True)
+        await self._include_album_siblings(all_matches, list(all_matches.values()))
+        return sorted(all_matches.values(), key=lambda item: item.date, reverse=True)
 
     async def _include_album_siblings(self, all_messages: dict[str, Message], matches: list[Message]):
         processed_groups = set()

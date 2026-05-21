@@ -492,9 +492,9 @@ class DatabaseManager:
                 UPDATE download_queue
                 SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP,
                     retry_count = max_retries
-                WHERE (chat_id = ? OR task_data LIKE ?)
+                WHERE (chat_id = ? OR json_extract(task_data, '$.requester_chat_id') = ?)
                   AND status IN ('pending', 'failed', 'downloading')
-            """, (str(chat_id), f'%requester_chat_id%{chat_id}%'))
+            """, (str(chat_id), str(chat_id)))
             await db.commit()
 
     async def cancel_all_tasks(self):

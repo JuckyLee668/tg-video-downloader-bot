@@ -38,13 +38,13 @@ async def help_handler(event, arg=None):
 
 async def status_handler(event, arg=None):
     summary = await db_manager.get_stats_summary()
-    
+
     # 获取数据库活跃任务
     async with aiosqlite.connect(db_manager.db_path) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT * FROM download_queue WHERE status = 'downloading' LIMIT 10")
         active_tasks = await cursor.fetchall()
-        
+
     status_text = (
         "📊 **当前系统状态:**\n\n"
         f"⏳ 队列等待中: `{summary['pending']}`\n"
@@ -52,12 +52,12 @@ async def status_handler(event, arg=None):
         f"✅ 已完成历史: `{summary['completed']}`\n"
         f"📦 总计下载大小: `{format_size(summary['total_size'] or 0)}`\n\n"
     )
-    
+
     if active_tasks:
         status_text += "🚀 **活跃下载任务:**\n"
         for task in active_tasks:
             status_text += f"• `{task['file_name']}`: {task['progress'] or 0}%\n"
     else:
         status_text += "💤 当前没有正在运行的任务。"
-        
+
     await event.respond(status_text)

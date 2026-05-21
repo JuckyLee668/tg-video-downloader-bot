@@ -48,12 +48,12 @@ class TelegramClientWrapper:
         self.session_file = "session.txt"
         self.phone = None
         self.phone_code_hash = None
-        
+
     async def init(self):
         # Bot uses global proxy; user client prefers dedicated proxy when provided
         bot_proxy = get_proxy_dict(config.proxy)
         user_proxy = get_proxy_dict(config.user_api.proxy or config.proxy)
-        
+
         # Initialize Bot Client
         if config.bot_token:
             logger.info(f"Init bot client with proxy={bot_proxy}")
@@ -73,7 +73,7 @@ class TelegramClientWrapper:
             if os.path.exists(self.session_file):
                 with open(self.session_file, "r") as f:
                     session_str = f.read().strip()
-            
+
             logger.info(f"Init user client with proxy={user_proxy}")
             self.user_client = TelegramClient(
                 StringSession(session_str),
@@ -83,13 +83,13 @@ class TelegramClientWrapper:
                 **TELETHON_KWARGS,
             )
             await self.user_client.connect()
-            
+
             if await self.user_client.is_user_authorized():
                 logger.info("Telegram 用户客户端已连接")
                 init_searcher(self.user_client)
             else:
                 logger.warning("Telegram 用户客户端尚未登录，请通过 Bot 发送 /login 进行登录")
-    
+
     async def save_user_session(self):
         if self.user_client:
             with open(self.session_file, "w") as f:
@@ -99,7 +99,7 @@ class TelegramClientWrapper:
         if not self.user_client:
             if not config.user_api.api_id or not config.user_api.api_hash:
                 raise Exception("未配置 USER_API_ID 或 USER_API_HASH，请检查 .env 文件")
-            
+
             proxy = get_proxy_dict(config.user_api.proxy or config.proxy)
             self.user_client = TelegramClient(
                 StringSession(""),
