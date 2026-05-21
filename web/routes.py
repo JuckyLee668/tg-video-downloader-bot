@@ -14,6 +14,7 @@ from core.database import db_manager
 from downloader.manager import download_manager
 from telegram import search
 from telegram.client import tg_clients
+from telegram.handlers.thumbnail import ensure_thumb_dir, generate_thumbnails
 from web.api_models import (
     BatchDeleteRequest,
     ConnectRequest,
@@ -206,7 +207,7 @@ async def get_searcher():
 async def search_recent(req: SearchRecentRequest):
     searcher = await get_searcher()
     try:
-        messages = await searcher.get_recent(req.limit, req.media_type)
+        messages = await searcher.get_recent(req.limit, req.media_type, offset_id=req.offset_id or 0)
         return [serialize_message(message) for message in messages]
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -216,7 +217,7 @@ async def search_recent(req: SearchRecentRequest):
 async def search_keyword(req: SearchKeywordRequest):
     searcher = await get_searcher()
     try:
-        messages = await searcher.search_keyword(req.keyword, req.limit, req.media_type)
+        messages = await searcher.search_keyword(req.keyword, req.limit, req.media_type, offset_id=req.offset_id or 0)
         return [serialize_message(message) for message in messages]
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -230,10 +231,96 @@ async def search_time(req: SearchTimeRequest):
         end_date = datetime.strptime(req.end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
         if end_date < start_date:
             raise ValueError("end_date must be greater than or equal to start_date")
-        messages = await searcher.search_by_time(start_date, end_date, req.limit, req.media_type)
+        messages = await searcher.search_by_time(start_date, end_date, req.limit, req.media_type, offset_id=req.offset_id or 0)
         return [serialize_message(message) for message in messages]
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+# ── 异步缩略图生成 ────────────────────────────────────────
+
+_thumb_tasks: dict[str, dict] = {}  # task_id -> {"status": "running"|"done", "thumbs": [{msg_id, url, name}, ...]}
+
+
+class ThumbnailRequest(BaseModel):
+    """缩略图生成请求"""
+    messages: list[dict]  # [{"id": int, "chat_id": str, "media_type": str}, ...]
+
+
+@router.post("/search/thumbnails/start")
+async def start_thumbnail_gen(req: ThumbnailRequest):
+    """异步启动缩略图生成，返回 task_id"""
+    import asyncio
+    import uuid
+
+    if not tg_clients.user_client or not await tg_clients.user_client.is_user_authorized():
+        raise HTTPException(status_code=401, detail="User client not logged in")
+
+    task_id = str(uuid.uuid4())[:8]
+    _thumb_tasks[task_id] = {"status": "running", "thumbs": [], "total": len(req.messages)}
+
+    async def _gen():
+        try:
+            await ensure_thumb_dir()
+
+            # Fetch messages and keep index mapping back to request items
+            msg_items: list[tuple] = []  # [(msg, req_item), ...]
+            for idx, item in enumerate(req.messages):
+                try:
+                    peer = await tg_clients.user_client.get_input_entity(int(item["chat_id"]))
+                    result = await tg_clients.user_client.get_messages(peer, ids=item["id"])
+                    # get_messages with single id returns a single Message, not a list
+                    msg = result[0] if isinstance(result, (list, tuple)) else result
+                    if msg:
+                        msg_items.append((msg, item))
+                except Exception as e:
+                    logger.debug(f"Thumb fetch msg {item['id']} failed: {e}")
+
+            logger.info(f"Thumbnail gen: fetched {len(msg_items)}/{len(req.messages)} messages")
+            if not msg_items:
+                _thumb_tasks[task_id]["status"] = "done"
+                return
+
+            # generate_thumbnails preserves input order
+            msgs_only = [m for m, _ in msg_items]
+            results = await generate_thumbnails(tg_clients.user_client, msgs_only, max_thumbs=50)
+
+            thumbs = []
+            # results[i] corresponds to msgs_only[i] corresponds to msg_items[i]
+            for i, (path, name) in enumerate(results):
+                if i >= len(msg_items):
+                    break
+                _, req_item = msg_items[i]
+                thumbs.append({
+                    "url": f"/thumbs/{path.name}",
+                    "name": name,
+                    "chat_id": req_item["chat_id"],
+                    "msg_id": req_item["id"],
+                })
+
+            _thumb_tasks[task_id]["thumbs"] = thumbs
+            _thumb_tasks[task_id]["status"] = "done"
+        except Exception as e:
+            logger.exception(f"Thumbnail gen failed: {e}")
+            _thumb_tasks[task_id]["status"] = "error"
+            _thumb_tasks[task_id]["error"] = str(e)
+
+    asyncio.ensure_future(_gen())
+    return {"task_id": task_id, "total": len(req.messages)}
+
+
+@router.get("/search/thumbnails/{task_id}")
+async def poll_thumbnails(task_id: str):
+    """轮询缩略图生成进度"""
+    task = _thumb_tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {
+        "status": task["status"],
+        "thumbs": task["thumbs"],
+        "total": task.get("total", 0),
+        "generated": len(task["thumbs"]),
+    }
 
 
 @router.post("/download/batch")

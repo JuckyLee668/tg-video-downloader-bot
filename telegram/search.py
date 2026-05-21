@@ -110,7 +110,7 @@ class ChannelSearcher:
         }
         return media_map.get(media_type.lower())
 
-    async def search_keyword(self, keyword: str, limit: int = 50, media_type: Optional[str] = None) -> List[Message]:
+    async def search_keyword(self, keyword: str, limit: int = 50, media_type: Optional[str] = None, offset_id: int = 0) -> List[Message]:
         if not await self.ensure_connected():
             raise RuntimeError("Connect a channel before searching")
 
@@ -121,7 +121,10 @@ class ChannelSearcher:
         async def search_peer(peer):
             found = []
             async with sem:
-                async for message in self.client.iter_messages(peer, search=keyword, limit=limit, filter=m_filter):
+                kwargs = dict(search=keyword, limit=limit, filter=m_filter)
+                if offset_id:
+                    kwargs["offset_id"] = offset_id
+                async for message in self.client.iter_messages(peer, **kwargs):
                     if message.media:
                         found.append(message)
             return found
@@ -163,6 +166,7 @@ class ChannelSearcher:
         end_date: datetime,
         limit: int = 100,
         media_type: Optional[str] = None,
+        offset_id: int = 0,
     ) -> List[Message]:
         if not await self.ensure_connected():
             raise RuntimeError("Connect a channel before searching")
@@ -176,7 +180,10 @@ class ChannelSearcher:
         async def search_peer(peer):
             found = []
             async with sem:
-                async for message in self.client.iter_messages(peer, offset_date=end_date, limit=limit, filter=m_filter):
+                kwargs = dict(offset_date=end_date, limit=limit, filter=m_filter)
+                if offset_id:
+                    kwargs["offset_id"] = offset_id
+                async for message in self.client.iter_messages(peer, **kwargs):
                     if message.date < start_date:
                         break
                     if message.media:
@@ -192,7 +199,7 @@ class ChannelSearcher:
             messages.extend(result)
         return sorted(messages, key=lambda item: item.date, reverse=True)
 
-    async def get_recent(self, count: int = 50, media_type: Optional[str] = None) -> List[Message]:
+    async def get_recent(self, count: int = 50, media_type: Optional[str] = None, offset_id: int = 0) -> List[Message]:
         if not await self.ensure_connected():
             raise RuntimeError("Connect a channel before searching")
 
@@ -203,7 +210,10 @@ class ChannelSearcher:
         async def search_peer(peer):
             found = []
             async with sem:
-                async for message in self.client.iter_messages(peer, limit=count, filter=m_filter):
+                kwargs = dict(limit=count, filter=m_filter)
+                if offset_id:
+                    kwargs["offset_id"] = offset_id
+                async for message in self.client.iter_messages(peer, **kwargs):
                     if message.media:
                         found.append(message)
             return found

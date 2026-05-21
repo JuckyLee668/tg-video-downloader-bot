@@ -129,6 +129,7 @@
                                 <thead class="bg-gray-50 border-b">
                                     <tr>
                                         <th class="p-2"><input type="checkbox" onchange="toggleAll(this)"></th>
+                                        <th class="p-2">Thumb</th>
                                         <th class="p-2">Name</th>
                                         <th class="p-2">Size</th>
                                         <th class="p-2">Date</th>
@@ -425,11 +426,12 @@
             loadChannels();
         }
 
+        // ── Search ─────────────────────────────────────────
         async function searchRecent() {
             const mediaType = document.getElementById('search-media-type').value;
             const data = await fetchApi('/search/recent', { 
                 method: 'POST', 
-                body: JSON.stringify({ limit: 50, media_type: mediaType }) 
+                body: JSON.stringify({ limit: 1000, media_type: mediaType }) 
             });
             renderResults(data);
         }
@@ -440,7 +442,7 @@
             if (!kw) return;
             const data = await fetchApi('/search/keyword', { 
                 method: 'POST', 
-                body: JSON.stringify({ keyword: kw, media_type: mediaType }) 
+                body: JSON.stringify({ keyword: kw, limit: 1000, media_type: mediaType }) 
             });
             renderResults(data);
         }
@@ -452,29 +454,87 @@
             if (!start || !end) return;
             const data = await fetchApi('/search/time', { 
                 method: 'POST', 
-                body: JSON.stringify({ start_date: start, end_date: end, media_type: mediaType }) 
+                body: JSON.stringify({ start_date: start, end_date: end, limit: 1000, media_type: mediaType }) 
             });
             renderResults(data);
         }
 
         function renderResults(messages) {
-            currentResults = messages;
             document.getElementById('search-results-container').classList.remove('hidden');
             document.getElementById('results-count').innerText = messages.length;
+            
             const tbody = document.getElementById('search-results-list');
-            tbody.innerHTML = messages.map(m => `
+            tbody.innerHTML = messages.map(m => {
+                const thumbKey = m.chat_id + ':' + m.id;
+                const thumbHtml = `<div class="w-12 h-12 bg-gray-100 rounded flex items-center justify-center text-[8px] text-gray-400" id="thumb-${thumbKey.replace(':', '-')}">...</div>`;
+                return `
                 <tr>
                     <td class="p-2"><input type="checkbox" class="result-check" data-id="${m.id}" data-chat="${m.chat_id}"></td>
+                    <td class="p-2">${thumbHtml}</td>
                     <td class="p-2 font-mono text-[10px] max-w-xs truncate" title="${m.file_name || m.text}">${m.file_name || m.text?.substring(0,40) || 'media_' + m.id}</td>
                     <td class="p-2 text-xs">${(m.file_size / 1024 / 1024).toFixed(2)} MB</td>
                     <td class="p-2 text-[10px]">${new Date(m.date).toLocaleDateString()}</td>
                     <td class="p-2"><span class="px-2 py-0.5 bg-gray-100 rounded text-[9px] font-bold uppercase text-gray-600">${m.media_type}</span></td>
                 </tr>
-            `).join('');
+            `}).join('');
             
             // Auto-load dialogs if not already loaded
             if (document.getElementById('forward-to').options.length <= 1) {
                 loadDialogs();
+            }
+            
+            // Start async thumbnail generation
+            startThumbnails(messages);
+        }
+
+        let currentThumbTaskId = null;
+
+        async function startThumbnails(messages) {
+            const mediaMsgs = messages.filter(m => m.media_type === 'video' || m.media_type === 'photo').slice(0, 50);
+            if (!mediaMsgs.length) return;
+            
+            try {
+                const res = await fetchApi('/search/thumbnails/start', {
+                    method: 'POST',
+                    body: JSON.stringify({ messages: mediaMsgs.map(m => ({ id: m.id, chat_id: m.chat_id, media_type: m.media_type })) })
+                });
+                currentThumbTaskId = res.task_id;
+                pollThumbnails(res.task_id);
+            } catch (err) {
+                console.error('Failed to start thumbnails:', err);
+            }
+        }
+
+        async function pollThumbnails(taskId) {
+            const maxAttempts = 120;
+            for (let i = 0; i < maxAttempts; i++) {
+                try {
+                    const res = await fetchApi('/search/thumbnails/' + taskId);
+                    
+                    res.thumbs.forEach(t => {
+                        const key = t.chat_id + ':' + t.msg_id;
+                        const el = document.getElementById('thumb-' + key.replace(':', '-'));
+                        if (el) {
+                            const img = document.createElement('img');
+                            img.className = 'w-12 h-12 object-cover rounded border';
+                            img.src = t.url;
+                            img.onerror = function() {
+                                this.outerHTML = '<div class="w-12 h-12 bg-gray-100 rounded flex items-center justify-center text-[8px] text-gray-400">N/A</div>';
+                            };
+                            el.parentNode.replaceChild(img, el);
+                        }
+                    });
+                    
+                    if (res.status === 'done' || res.status === 'error') {
+                        console.log('Thumbnails generation complete:', res.status);
+                        break;
+                    }
+                    
+                    await new Promise(r => setTimeout(r, 1000));
+                } catch (err) {
+                    console.error('Poll thumbnails failed:', err);
+                    break;
+                }
             }
         }
 

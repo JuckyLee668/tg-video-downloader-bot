@@ -11,18 +11,21 @@ class JoinRequest(BaseModel):
 
 class SearchKeywordRequest(BaseModel):
     keyword: str = Field(min_length=1, max_length=120)
-    limit: Optional[int] = Field(default=50, ge=1, le=200)
+    limit: Optional[int] = Field(default=50, ge=1, le=1000)
     media_type: Optional[str] = None
+    offset_id: Optional[int] = Field(default=0, ge=0)
 
 class SearchTimeRequest(BaseModel):
     start_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     end_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
-    limit: Optional[int] = Field(default=100, ge=1, le=500)
+    limit: Optional[int] = Field(default=100, ge=1, le=1000)
     media_type: Optional[str] = None
+    offset_id: Optional[int] = Field(default=0, ge=0)
 
 class SearchRecentRequest(BaseModel):
-    limit: Optional[int] = Field(default=50, ge=1, le=200)
+    limit: Optional[int] = Field(default=50, ge=1, le=1000)
     media_type: Optional[str] = None
+    offset_id: Optional[int] = Field(default=0, ge=0)
 
 class DownloadBatchRequest(BaseModel):
     message_ids: List[int] = Field(min_length=1, max_length=500)

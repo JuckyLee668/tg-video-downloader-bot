@@ -23,6 +23,14 @@ def create_app():
     # API Routes
     app.include_router(api_router, prefix="/api")
     
+    # Mount thumbnails static directory
+    thumb_dir = os.path.expanduser(config.save_path.rstrip("/downloads")) + "/../.tg_downloader_thumbs"
+    thumb_dir_real = os.path.join(os.path.dirname(os.path.abspath(".")), ".tg_downloader_thumbs")
+    if os.path.exists("/root/.tg_downloader_thumbs"):
+        app.mount("/thumbs", StaticFiles(directory="/root/.tg_downloader_thumbs"), name="thumbs")
+    elif os.path.exists(thumb_dir):
+        app.mount("/thumbs", StaticFiles(directory=thumb_dir), name="thumbs")
+    
     # Static files (the existing dashboard.html)
     # Check if public directory exists
     if os.path.exists("public"):
