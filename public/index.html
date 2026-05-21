@@ -28,6 +28,7 @@
             <button onclick="showTab('main')" id="tab-main" class="tab-btn px-4 py-2 font-medium active">Dashboard</button>
             <button onclick="showTab('settings')" id="tab-settings" class="tab-btn px-4 py-2 font-medium">Settings & Proxy</button>
             <button onclick="showTab('history')" id="tab-history" class="tab-btn px-4 py-2 font-medium">History</button>
+            <button onclick="showTab('storage')" id="tab-storage" class="tab-btn px-4 py-2 font-medium">Local Files</button>
         </div>
 
         <div id="content-main" class="tab-content grid grid-cols-1 lg:grid-cols-4 gap-8">
@@ -228,6 +229,36 @@
                 </div>
                 <div id="history-list" class="space-y-2">
                     <!-- Dynamic -->
+                </div>
+            </section>
+        </div>
+
+        <!-- Local Files Tab -->
+        <div id="content-storage" class="tab-content hidden space-y-8">
+            <section class="bg-white p-6 rounded-lg shadow">
+                <div class="flex items-center justify-between mb-4 border-b pb-2">
+                    <h2 class="text-xl font-semibold">📂 Local Downloaded Files</h2>
+                    <div class="flex gap-2 items-center">
+                        <span id="storage-summary" class="text-xs text-gray-500"></span>
+                        <button onclick="deleteSelectedStorage()" class="text-xs bg-red-50 text-red-600 px-3 py-1 rounded border border-red-100 hover:bg-red-100">Delete Selected</button>
+                        <button onclick="clearStorage()" class="text-xs bg-gray-50 text-gray-600 px-3 py-1 rounded border border-gray-200 hover:bg-gray-100">Clear All</button>
+                    </div>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="p-2 w-8"><input type="checkbox" onchange="toggleAllStorage(this)"></th>
+                                <th class="p-2">File Name</th>
+                                <th class="p-2">Size</th>
+                                <th class="p-2">Modified</th>
+                                <th class="p-2">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="storage-list" class="divide-y">
+                            <!-- Dynamic -->
+                        </tbody>
+                    </table>
                 </div>
             </section>
         </div>
@@ -590,6 +621,67 @@
         function toggleAllHistory(cb) {
             document.querySelectorAll('.history-check').forEach(el => el.checked = cb.checked);
         }
+
+        // ── Storage (Local Files) ──────────────────────────
+        async function loadStorage() {
+            const data = await fetchApi('/storage/files');
+            document.getElementById('storage-summary').innerText = `${data.total_files} files, ${formatSize(data.total_size)}`;
+            const tbody = document.getElementById('storage-list');
+            tbody.innerHTML = data.files.map(f => {
+                const delBadge = f.is_del_marked ? ' <span class="text-xs text-red-500">(marked for deletion)</span>' : '';
+                return `
+                <tr>
+                    <td class="p-2"><input type="checkbox" class="storage-check" data-name="${f.name.replace(/"/g, '&quot;')}"></td>
+                    <td class="p-2 max-w-md truncate font-mono text-xs" title="${f.name}">${f.name}${delBadge}</td>
+                    <td class="p-2 text-xs">${f.size_formatted}</td>
+                    <td class="p-2 text-[10px]">${new Date(f.modified).toLocaleString()}</td>
+                    <td class="p-2">
+                        <button onclick="deleteStorageFile('${f.name.replace(/'/g, "\\'")}')" class="text-red-500 hover:text-red-700 text-xs">Delete</button>
+                    </td>
+                </tr>
+            `}).join('') || '<tr><td colspan="5" class="p-4 text-center text-gray-400 italic">No local files</td></tr>';
+        }
+
+        function formatSize(bytes) {
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            let i = 0;
+            let size = bytes;
+            while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
+            return size.toFixed(2) + ' ' + units[i];
+        }
+
+        function toggleAllStorage(cb) {
+            document.querySelectorAll('.storage-check').forEach(el => el.checked = cb.checked);
+        }
+
+        async function deleteStorageFile(name) {
+            if (!confirm(`Delete "${name}"?`)) return;
+            await fetchApi('/storage/delete', { method: 'POST', body: JSON.stringify({ names: [name] }) });
+            loadStorage();
+        }
+
+        async function deleteSelectedStorage() {
+            const names = Array.from(document.querySelectorAll('.storage-check:checked')).map(el => el.dataset.name);
+            if (!names.length) return;
+            if (!confirm(`Delete ${names.length} selected file(s)?`)) return;
+            await fetchApi('/storage/delete', { method: 'POST', body: JSON.stringify({ names }) });
+            loadStorage();
+        }
+
+        async function clearStorage() {
+            if (!confirm('Delete ALL local downloaded files? This cannot be undone.')) return;
+            const res = await fetchApi('/storage/clear', { method: 'POST' });
+            alert(`Deleted ${res.deleted} files, freed ${res.freed_formatted}`);
+            loadStorage();
+        }
+
+        // Patch showTab to load storage data
+        const _origShowTab = showTab;
+        showTab = function(tab) {
+            _origShowTab(tab);
+            if (tab === 'storage') loadStorage();
+            if (tab === 'history') loadHistory();
+        };
 
         async function checkLoginStatus() {
             const statusDiv = document.getElementById('login-checking');

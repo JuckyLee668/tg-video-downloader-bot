@@ -2,32 +2,34 @@ from downloader.manager import download_manager
 from telegram.client import tg_clients
 from telegram.search_cache import search_cache
 from telegram.state_manager import state_manager
+from telegram.handlers.utils import parse_indices
 
 
 async def batch_forward_handler(event, arg=None):
-    # arg: "target indices" or "target"
-    if not arg:
-        await event.respond("📤 请输入目标聊天（ID 或 @username）")
-        state_manager.set(event.chat_id, {'command': 'bf', 'step': 'target'})
-        return
-        
-    parts = arg.split(maxsplit=1)
-    target = parts[0]
-    indices_str = parts[1] if len(parts) > 1 else None
-    
+    # 先问序号范围，再问目标
     last_results = search_cache.get(event.chat_id)
     if not last_results:
         await event.respond("❌ 请先进行搜索。")
         return
 
-    # 这里可以继续引导进入 delete_after 确认
+    if not arg or arg.strip().lower() == 'all':
+        indices_str = 'all'
+    else:
+        # 校验是否有效的序号格式
+        try:
+            parse_indices(arg)
+            indices_str = arg
+        except Exception:
+            await event.respond("📤 请输入序号范围（如 `1-5,8` 或 `all`）：")
+            state_manager.set(event.chat_id, {'command': 'bf', 'step': 'indices'})
+            return
+
     state_manager.set(event.chat_id, {
-        'command': 'bf', 
-        'step': 'delete', 
-        'target': target, 
-        'indices': indices_str
+        'command': 'bf',
+        'step': 'target',
+        'indices': indices_str,
     })
-    await event.respond("🗑️ 转发完成后是否删除本地文件？回复 yes/no（默认 yes）。")
+    await event.respond("📤 请输入目标聊天（ID 或 @username）：")
 
 async def forward_link_handler(event, arg=None):
     # 处理 /forward [link]
@@ -51,18 +53,24 @@ async def do_bf(event, target, indices_str=None, delete_after=False):
     if not tg_clients.user_client or not await tg_clients.user_client.is_user_authorized():
         await event.respond("❌ 用户客户端未登录。")
         return
-        
+
+    # 预校验转发目标是否有效
+    try:
+        peer = await download_manager._resolve_forward_peer(tg_clients.user_client, target)
+    except Exception as e:
+        await event.respond(f"❌ 目标无效: {e}\n请使用 @username 或聊天 ID（如 -1001234567890）")
+        return
+
     last_results = search_cache.get(event.chat_id)
     if not last_results:
         await event.respond("❌ 请先搜索。")
         return
-        
-    from telegram.handlers.download import _parse_indices
+
     messages_to_forward = []
     if not indices_str or indices_str.lower() == 'all':
         messages_to_forward = last_results
     else:
-        indices = _parse_indices(indices_str)
+        indices = parse_indices(indices_str)
         for idx in sorted(indices):
             if 1 <= idx <= len(last_results):
                 messages_to_forward.append(last_results[idx-1])
@@ -85,7 +93,7 @@ async def do_bf(event, target, indices_str=None, delete_after=False):
         display_name = f"[DEL]{file_name}" if delete_after else file_name
         
         task = {
-            'chat_id': msg.chat_id,
+            'chat_id': str(event.chat_id),
             'message_id': msg.id,
             'file_name': display_name,
             'media_type': msg.media.__class__.__name__ if msg.media else 'unknown',

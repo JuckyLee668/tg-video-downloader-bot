@@ -5,6 +5,8 @@ from typing import Callable, Optional
 
 from telethon import TelegramClient, errors, functions, types
 
+from telegram.limiter import rate_limiter
+
 
 class DownloadEngine:
     def __init__(self):
@@ -21,6 +23,7 @@ class DownloadEngine:
         if not message or not message.media:
             raise ValueError("Message does not contain media")
 
+        await rate_limiter.wait()
         return await client.download_media(message, file=save_path, progress_callback=progress_callback)
 
     async def _parallel_download(

@@ -200,6 +200,64 @@ ensure_template_file "$ENV_FILE" "$ENV_EXAMPLE_FILE" ".env"
 validate_placeholders
 ensure_production_safety
 
+setup_aliyundrive() {
+    local enabled
+    enabled=$("$PYTHON_EXE" -c "
+import yaml
+try:
+    with open('$CONFIG_FILE') as f:
+        cfg = yaml.safe_load(f) or {}
+    print(str(cfg.get('aliyundrive_upload', {}).get('enabled', False)).lower())
+except:
+    print('false')
+" 2>/dev/null)
+
+    if [[ "$enabled" != "true" ]]; then
+        return
+    fi
+
+    info "阿里云盘上传已启用，检查环境..."
+
+    if command -v aliyunpan &>/dev/null; then
+        ok "aliyunpan CLI 已安装 ($(aliyunpan --version 2>&1 | head -1))"
+    else
+        warn "aliyunpan CLI 未安装，正在安装..."
+        local ver="v0.3.9"
+        local tmpdir="/root/.aliyunpan_install"
+        mkdir -p "$tmpdir"
+        cd "$tmpdir"
+        wget -q "https://github.com/tickstep/aliyunpan/releases/download/${ver}/aliyunpan-${ver}-linux-amd64.zip" \
+            -O "aliyunpan.zip" || fail "下载 aliyunpan 失败"
+        unzip -q aliyunpan.zip || fail "解压 aliyunpan 失败"
+        cp "aliyunpan-${ver}-linux-amd64/aliyunpan" /usr/local/bin/aliyunpan
+        chmod +x /usr/local/bin/aliyunpan
+        rm -rf "$tmpdir"
+        ok "aliyunpan CLI 已安装到 /usr/local/bin/aliyunpan"
+    fi
+
+    # 检查登录状态（带超时，避免网络卡住）
+    local who_out
+    who_out=$(timeout 10 aliyunpan who 2>/dev/null) || true
+    if echo "$who_out" | grep -q "当前账号"; then
+        local user
+        user=$(echo "$who_out" | grep -oP '当前账号：\K.*')
+        ok "阿里云盘已登录: ${user:-未知}"
+    else
+        echo ""
+        warn "=============================================="
+        warn "阿里云盘未登录，请在另一个终端执行以下命令登录："
+        echo ""
+        echo "    aliyunpan login"
+        echo ""
+        warn "按提示打开链接 -> 授权 -> 扫码即可完成登录"
+        warn "登录完成后重新运行此脚本"
+        warn "=============================================="
+        echo ""
+    fi
+}
+
+setup_aliyundrive
+
 if [[ -n "$WEB_HOST_OVERRIDE" ]]; then
     export WEB_HOST="$WEB_HOST_OVERRIDE"
 fi

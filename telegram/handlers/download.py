@@ -3,6 +3,7 @@ from downloader.manager import download_manager
 from telegram import search as search_module
 from telegram.search_cache import search_cache
 from telegram.state_manager import state_manager
+from telegram.handlers.utils import parse_indices
 
 
 async def batch_download_handler(event, arg=None):
@@ -14,7 +15,7 @@ async def batch_download_handler(event, arg=None):
     else:
         # 解析范围 "1-3, 5"
         try:
-            indices = _parse_indices(arg)
+            indices = parse_indices(arg)
             if not last_results:
                 await event.respond("❌ 请先进行搜索。")
                 return
@@ -65,25 +66,17 @@ async def download_list_handler(event, arg=None):
     await event.respond(response)
 
 async def cancel_handler(event, arg=None):
-    await download_manager.cancel_user_tasks(str(event.chat_id))
-    await event.respond("🚫 已成功取消您所有的待处理下载任务。")
+    chat_id = str(event.chat_id)
+    # 取消所有待处理/失败/下载中的任务，设满重试次数防止反复重试
+    await download_manager.cancel_user_tasks(chat_id)
+    # 清除内存中活跃任务标记，让 worker 重新取队列
+    download_manager.active_tasks.clear()
+    await download_manager.wake_workers()
+    await event.respond("🚫 已取消所有下载任务。")
 
 async def clear_cache_handler(event, arg=None):
     search_cache.clear(event.chat_id)
     await event.respond("🧹 已清理搜索结果缓存。")
-
-def _parse_indices(arg):
-    indices = set()
-    arg_clean = arg.replace('，', ',')
-    parts = arg_clean.split(',')
-    for part in parts:
-        part = part.strip()
-        if '-' in part:
-            start_str, end_str = part.split('-')
-            indices.update(range(int(start_str), int(end_str) + 1))
-        elif part.isdigit():
-            indices.add(int(part))
-    return indices
 
 async def do_bdf(event, formats_str, indices_str=None):
     last_results = search_cache.get(event.chat_id)
@@ -95,7 +88,7 @@ async def do_bdf(event, formats_str, indices_str=None):
     if not indices_str:
         messages_to_download = last_results
     else:
-        indices = _parse_indices(indices_str)
+        indices = parse_indices(indices_str)
         for idx in sorted(indices):
             if 1 <= idx <= len(last_results):
                 messages_to_download.append(last_results[idx-1])

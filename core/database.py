@@ -490,9 +490,11 @@ class DatabaseManager:
         async with self._get_db() as db:
             await db.execute("""
                 UPDATE download_queue
-                SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
-                WHERE chat_id = ? AND status IN ('pending', 'failed')
-            """, (str(chat_id),))
+                SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP,
+                    retry_count = max_retries
+                WHERE (chat_id = ? OR task_data LIKE ?)
+                  AND status IN ('pending', 'failed', 'downloading')
+            """, (str(chat_id), f'%requester_chat_id%{chat_id}%'))
             await db.commit()
 
     async def cancel_all_tasks(self):

@@ -31,6 +31,7 @@ async def help_handler(event, arg=None):
         "⚙️ **系统命令**\n"
         "• `/cancel` (`/c`) — 取消当前操作或下载\n"
         "• `/clear` (`/cl`) — 清理下载队列和历史\n"
+        "• `/files` (`/f`) — 查看/清理本地下载文件\n"
         "• `/help` — 返回完整菜单"
     )
     await event.respond(help_text)

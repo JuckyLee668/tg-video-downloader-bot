@@ -7,6 +7,7 @@ from typing import Any
 import aiosqlite
 from fastapi import APIRouter, Depends, Header, HTTPException
 from loguru import logger
+from pydantic import BaseModel
 
 from core.config import ProxyConfig, config
 from core.database import db_manager
@@ -395,7 +396,7 @@ async def forward_messages(req: ForwardRequest):
 
             file_name = _message_file_name(msg)
             task = {
-                "chat_id": str(msg.chat_id),
+                "chat_id": "web_request",
                 "message_id": str(msg.id),
                 "file_name": file_name,
                 "media_type": serialize_message(msg).get("media_type", "unknown"),
@@ -427,3 +428,85 @@ def _message_file_name(msg) -> str:
     mime = getattr(msg.file, "mime_type", "") if msg.file else ""
     ext = ".mp4" if "video" in mime else ".mp3" if "audio" in mime else ".jpg" if "image" in mime else ""
     return f"media_{msg.id}{ext}"
+
+
+# ── 本地文件管理 ──────────────────────────────────────────
+
+@router.get("/storage/files")
+async def get_local_files():
+    """列出本地下载目录中的文件"""
+    downloads_dir = Path(config.save_path).expanduser().resolve()
+    if not downloads_dir.exists():
+        return {"files": [], "total_size": 0, "total_files": 0}
+
+    files = sorted(
+        [f for f in downloads_dir.iterdir() if f.is_file()],
+        key=lambda f: f.stat().st_mtime,
+        reverse=True,
+    )
+    result = []
+    for f in files:
+        stat = f.stat()
+        result.append({
+            "name": f.name,
+            "size": stat.st_size,
+            "size_formatted": _format_bytes(stat.st_size),
+            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            "is_del_marked": f.name.startswith("[DEL]"),
+        })
+
+    total_size = sum(f.stat().st_size for f in files)
+    return {"files": result, "total_size": total_size, "total_files": len(files)}
+
+
+class FileDeleteRequest(BaseModel):
+    names: list[str]
+
+
+@router.post("/storage/delete")
+async def delete_local_files(req: FileDeleteRequest):
+    """删除指定的本地文件"""
+    downloads_dir = Path(config.save_path).expanduser().resolve()
+    deleted = 0
+    freed = 0
+    errors = []
+    for name in req.names:
+        fpath = downloads_dir / name
+        try:
+            safe = fpath.resolve()
+            if not str(safe).startswith(str(downloads_dir.resolve())):
+                errors.append(f"{name}: path escape")
+                continue
+            if safe.exists() and safe.is_file():
+                freed += int(safe.stat().st_size)
+                safe.unlink()
+                deleted += 1
+                logger.info(f"Web UI deleted local file: {name}")
+            else:
+                errors.append(f"{name}: not found")
+        except Exception as e:
+            errors.append(f"{name}: {e}")
+    return {"status": "success", "deleted": deleted, "freed": freed, "freed_formatted": _format_bytes(freed), "errors": errors}
+
+
+@router.post("/storage/clear")
+async def clear_local_files():
+    """清空本地下载目录"""
+    downloads_dir = Path(config.save_path).expanduser().resolve()
+    if not downloads_dir.exists():
+        return {"status": "success", "deleted": 0, "freed": 0}
+
+    files = [f for f in downloads_dir.iterdir() if f.is_file()]
+    freed = int(sum(f.stat().st_size for f in files))
+    for f in files:
+        f.unlink()
+    logger.info(f"Web UI cleared all local files, freed {_format_bytes(freed)}")
+    return {"status": "success", "deleted": len(files), "freed": freed, "freed_formatted": _format_bytes(freed)}
+
+
+def _format_bytes(size: int) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024:
+            return f"{size:.2f} {unit}"
+        size /= 1024
+    return f"{size:.2f} PB"

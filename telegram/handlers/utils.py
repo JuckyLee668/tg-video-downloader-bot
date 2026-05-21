@@ -24,6 +24,20 @@ async def ensure_searcher(event=None):
         
     return True
 
+def parse_indices(arg: str) -> set[int]:
+    """解析序号范围字符串（如 '1-3, 5' 或 '1，3-5'），返回索引集合"""
+    indices = set()
+    arg_clean = arg.replace('，', ',')
+    parts = arg_clean.split(',')
+    for part in parts:
+        part = part.strip()
+        if '-' in part:
+            start_str, end_str = part.split('-')
+            indices.update(range(int(start_str), int(end_str) + 1))
+        elif part.isdigit():
+            indices.add(int(part))
+    return indices
+
 def format_size(size_bytes):
     if size_bytes == 0:
         return "0B"

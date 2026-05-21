@@ -8,7 +8,7 @@ from downloader.manager import download_manager
 from telegram.client import tg_clients
 
 # 导入所有模块化的 handler
-from telegram.handlers import auth, channel, download, forward, search, system
+from telegram.handlers import auth, channel, download, forward, search, storage, system
 from telegram.state_manager import state_manager
 
 # 命令映射表
@@ -33,6 +33,8 @@ COMMAND_MAP = {
     "c": download.cancel_handler,
     "clear": download.clear_cache_handler,
     "cl": download.clear_cache_handler,
+    "files": storage.storage_handler,
+    "f": storage.storage_handler,
     "bf": forward.batch_forward_handler,
     "forward": forward.forward_link_handler,
 }
@@ -248,7 +250,11 @@ async def state_handler(event):
 
         # --- BATCH FORWARD (BF) ---
         elif cmd == 'bf':
-            if step == 'target':
+            if step == 'indices':
+                indices = 'all' if event.text.strip().lower() == 'all' else event.text.strip()
+                state_manager.update(event.chat_id, step='target', indices=indices)
+                await event.respond("📤 请输入目标聊天（ID 或 @username）：")
+            elif step == 'target':
                 target = event.text.strip()
                 state_manager.update(event.chat_id, step='delete', target=target)
                 await event.respond("🗑️ 转发后是否删除？回复 yes/no。")

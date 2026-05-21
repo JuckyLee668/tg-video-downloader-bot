@@ -84,7 +84,9 @@ class DownloadManager:
                 aliyundrive_uploader.enabled = True
                 aliyundrive_uploader.remote_path = config.aliyundrive_upload.remote_path
                 aliyundrive_uploader.delete_after_upload = config.aliyundrive_upload.delete_after_upload
-                await aliyundrive_uploader.upload(actual_path)
+                upload_ok = await aliyundrive_uploader.upload(actual_path)
+                if not upload_ok:
+                    logger.warning(f"AliyunDrive upload failed for task {task_id}, but download succeeded")
 
             delete_after = bool(task_data.get("delete_after_forward", False))
             await db_manager.complete_download_task(task, {
