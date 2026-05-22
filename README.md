@@ -1,27 +1,61 @@
 # Telegram Media Downloader Bot
 
-基于 **Telethon + FastAPI + SQLite** 的 Telegram 媒体下载与转发工具。项目提供 Telegram Bot 命令和 Web 控制台，支持频道连接、关键词搜索、时间范围搜索、批量下载、批量转发、代理配置和下载历史管理。
+基于 **Telethon + FastAPI + SQLite** 的 Telegram 媒体下载与转发工具。提供 Telegram Bot 命令和 Web 控制台，支持频道连接、关键词搜索、时间范围搜索、批量下载、批量转发、自动上传阿里云盘、本地文件管理和代理配置。
 
 ## 功能
 
-- Telegram Bot 控制：私聊 Bot 即可登录用户客户端、连接频道、搜索、下载和转发。
-- Web 控制台：默认监听 `127.0.0.1:8000`，可查看队列、历史、频道和登录状态。
-- 批量任务队列：下载任务落 SQLite，worker 通过数据库原子领取任务，避免重复处理。
-- 下载安全：保存文件名前会做路径净化，避免非法文件名和路径穿越。
-- 搜索优化：多频道搜索使用有限并发，兼顾速度和 Telegram 限流风险。
-- Web API 安全：生产环境强制设置 `WEB_API_KEY`；API key 使用常量时间比较，连续失败会临时锁定。
-- 代理支持：支持 HTTP 和 SOCKS5，可为全局或用户客户端配置代理。
+- **Telegram Bot 控制**：私聊 Bot 即可登录用户客户端、连接频道、搜索、下载和转发。
+- **Web 控制台**：默认监听 `127.0.0.1:8000`，可查看队列、历史、频道、本地文件和登录状态。
+- **批量任务队列**：下载任务落 SQLite，worker 通过数据库原子领取任务，避免重复处理。
+- **下载安全**：保存文件名前做路径净化，避免非法文件名和路径穿越。
+- **搜索优化**：多频道搜索使用有限并发，兼顾速度和 Telegram 限流风险。
+- **自动转发**：下载完成后自动转发到指定聊天（如 Saved Messages）。
+- **阿里云盘上传**：下载完成后自动上传到阿里云盘指定目录。
+- **缩略图预览**：搜索结果中为视频和图片生成缩略图，支持 Web 端异步加载。
+- **状态持久化**：交互状态和任务进度持久化到 SQLite，重启不丢失。
+- **Web API 安全**：生产环境强制设置 `WEB_API_KEY`；API key 使用常量时间比较，连续失败会临时锁定。
+- **代理支持**：支持 HTTP 和 SOCKS5，可为全局或用户客户端配置代理。
 
 ## 目录结构
 
 ```text
-core/          配置、数据库、路径安全工具
-downloader/    下载引擎和任务管理器
-telegram/      Telethon 客户端、路由、命令处理和频道搜索
-web/           FastAPI 应用、API 路由和请求模型
-public/        Web 静态页面
-tests/         pytest 测试
-data/          SQLite 数据库目录
+core/                  配置、数据库、路径安全工具
+  config.py            全局配置加载 (YAML + 环境变量)
+  database.py          SQLite 数据库管理 (队列、历史、统计)
+  paths.py             文件名净化与安全路径
+
+downloader/            下载引擎和任务管理器
+  engine.py            下载引擎 (Telethon download_media)
+  manager.py           任务管理器 (worker 池、下载、转发、自动上传)
+  aliyundrive_uploader.py  阿里云盘自动上传模块
+
+telegram/              Telethon 客户端、路由、命令和频道搜索
+  client.py            Telegram 客户端 (Bot + User)
+  router.py            统一命令路由 + FSM 状态机 + 媒体自动入库
+  search.py            多频道异步搜索 (关键词/时间/最新)
+  search_cache.py      搜索结果缓存
+  state_manager.py     FSM 交互状态持久化
+  limiter.py           消息频率限制
+  handlers/
+    auth.py            登录相关命令
+    channel.py         频道连接/列表
+    download.py        批量下载、队列、取消
+    forward.py         批量转发、链接转发
+    search.py          频道搜索命令
+    storage.py         本地文件管理命令
+    system.py          帮助/状态命令
+    thumbnail.py       缩略图生成 (视频/图片)
+    local_forward.py   下载后自动转发配置
+    utils.py           公用工具 (索引解析、格式化、文件名提取)
+
+web/                   FastAPI 应用、API 路由和请求模型
+  server.py            FastAPI 应用创建
+  routes.py            API 路由 (搜索、下载、转发、登录、文件管理)
+  api_models.py        Pydantic 请求模型
+
+public/                Web 静态页面
+tests/                 pytest 测试
+data/                  SQLite 数据库目录
 ```
 
 ## 环境要求
@@ -164,6 +198,28 @@ allowed_user_ids:
 
 也可以指定 Telegram 用户 ID 或用户名。
 
+### 阿里云盘自动上传
+
+```yaml
+aliyundrive_upload:
+  enabled: true
+  remote_path: /video
+  delete_after_upload: true
+```
+
+下载完成后自动上传文件到阿里云盘，可选上传后删除本地文件。
+
+### 下载后自动转发
+
+```yaml
+local_forward:
+  enabled: false
+  target_chat: ""    # chat_id 或 @username
+  delete_after_forward: false
+```
+
+下载完成后自动把文件转发到指定聊天（如 Saved Messages、群组）。可通过 Bot 命令 `/lf` 在线配置。
+
 ### Web API 安全
 
 本地默认不要求 `WEB_API_KEY`。如果要让 Web 服务监听公网地址，必须设置强随机密钥：
@@ -224,6 +280,8 @@ user_api:
 | `/dl` | 查看下载队列 |
 | `/cancel` 或 `/c` | 取消当前用户待处理任务 |
 | `/clear` 或 `/cl` | 清理当前用户搜索缓存 |
+| `/files` 或 `/f` | 查看/管理本地下载文件 |
+| `/lf` | 配置下载后自动转发 |
 
 ## Web 控制台
 
@@ -238,10 +296,14 @@ http://127.0.0.1:8000
 - 查看下载队列和进度
 - 删除、清空、重试任务
 - 查看下载历史
+- 搜索历史记录
 - 连接频道、加入频道
-- 搜索频道媒体
+- 搜索频道媒体（关键词/时间/最新）
+- 批量下载和转发
 - 登录用户客户端
 - 配置代理
+- 本地文件管理（查看/删除/清空）
+- 缩略图缓存管理
 
 ## 数据库与队列
 
@@ -257,7 +319,7 @@ data/telegram_downloader.db
 pending/failed -> downloading -> completed/history
 ```
 
-这使进程重启和多 worker 场景下的重复下载风险更低。
+交互状态（FSM）也会持久化到同一数据库，重启后自动恢复。
 
 ## Docker
 
