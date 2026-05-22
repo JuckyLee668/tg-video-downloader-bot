@@ -31,6 +31,10 @@ aliyundrive_upload:
   enabled: true
   remote_path: /video
   delete_after_upload: true
+local_forward:
+  enabled: false
+  target_chat: ''
+  delete_after_forward: false
 user_api:
   api_hash: ''
   api_id: ''

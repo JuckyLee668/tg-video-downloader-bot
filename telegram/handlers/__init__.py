@@ -39,6 +39,7 @@ def setup_handlers():
                     types.BotCommand(command='cancel', description='取消操作'),
                     types.BotCommand(command='clear', description='清理缓存'),
                     types.BotCommand(command='files', description='本地文件管理'),
+                    types.BotCommand(command='lf', description='自动转发配置'),
                     types.BotCommand(command='help', description='完整菜单'),
                 ]
             ))

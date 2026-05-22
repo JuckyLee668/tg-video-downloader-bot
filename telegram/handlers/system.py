@@ -7,6 +7,7 @@ from telegram.handlers.utils import format_size
 async def start_handler(event, arg=None):
     return await help_handler(event)
 
+
 async def help_handler(event, arg=None):
     help_text = (
         "🤖 **Telegram Media Downloader Bot**\n\n"
@@ -32,9 +33,11 @@ async def help_handler(event, arg=None):
         "• `/cancel` (`/c`) — 取消当前操作或下载\n"
         "• `/clear` (`/cl`) — 清理下载队列和历史\n"
         "• `/files` (`/f`) — 查看/清理本地下载文件\n"
+        "• `/lf` — 配置下载后自动转发\n"
         "• `/help` — 返回完整菜单"
     )
     await event.respond(help_text)
+
 
 async def status_handler(event, arg=None):
     summary = await db_manager.get_stats_summary()

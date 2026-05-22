@@ -88,6 +88,10 @@ class DownloadManager:
                 if not upload_ok:
                     logger.warning(f"AliyunDrive upload failed for task {task_id}, but download succeeded")
 
+            # 自动转发到本地聊天
+            if config.local_forward.enabled and config.local_forward.target_chat:
+                await self._auto_forward_to_local(tg_clients, actual_path, task)
+
             delete_after = bool(task_data.get("delete_after_forward", False))
             await db_manager.complete_download_task(task, {
                 "download_path": "" if delete_after else str(actual_path),
@@ -179,6 +183,44 @@ class DownloadManager:
             save_path.unlink(missing_ok=True)
 
         return actual_path
+
+    async def _auto_forward_to_local(self, tg_clients, save_path: Path, task: Dict[str, Any]):
+        """下载完成后自动转发到配置的本地聊天"""
+        target = config.local_forward.target_chat.strip()
+        if not target:
+            return
+        if not tg_clients.user_client or not await tg_clients.user_client.is_user_authorized():
+            logger.warning("User client not available for local forward, skipping")
+            return
+
+        try:
+            peer = await self._resolve_forward_peer(tg_clients.user_client, target)
+            file_size = save_path.stat().st_size
+            if file_size > 2000 * 1024 * 1024:
+                me = await tg_clients.user_client.get_me()
+                if not getattr(me, "premium", False):
+                    logger.warning(f"File over 2GB and account not premium, skipping local forward: {save_path.name}")
+                    return
+
+            force_doc = task.get("media_type") == "document"
+            uploaded = await tg_clients.user_client.upload_file(
+                str(save_path),
+                part_size_kb=512 if file_size > 100 * 1024 * 1024 else None,
+                progress_callback=self.create_progress_callback(task["task_id"]),
+            )
+            await tg_clients.user_client.send_file(
+                peer,
+                uploaded,
+                caption=f"📥 {task.get('file_name', '')}",
+                force_document=force_doc,
+            )
+            logger.info(f"Auto forwarded to local chat {target}: {save_path.name}")
+
+            if config.local_forward.delete_after_forward and save_path.exists():
+                save_path.unlink(missing_ok=True)
+                logger.info(f"Deleted local file after local forward: {save_path.name}")
+        except Exception as e:
+            logger.error(f"Auto forward to local chat failed for {save_path.name}: {e}")
 
     async def _forward_if_requested(self, tg_clients, save_path: Path, task: Dict[str, Any], task_data: Dict[str, Any]):
         forward_target = task_data.get("forward_target")

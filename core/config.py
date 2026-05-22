@@ -33,6 +33,13 @@ class AliyunDriveUploadConfig(BaseModel):
     remote_path: str = "/video"
     delete_after_upload: bool = False
 
+
+class LocalForwardConfig(BaseModel):
+    """下载后自动转发到指定聊天"""
+    enabled: bool = False
+    target_chat: str = ""  # chat_id 或 @username
+    delete_after_forward: bool = False
+
 class Config(BaseModel):
     bot_token: str = Field(default="")
     proxy: Optional[ProxyConfig] = None  # global proxy (default off)
@@ -59,6 +66,7 @@ class Config(BaseModel):
     web_cors_origins: List[str] = Field(default_factory=lambda: ["http://127.0.0.1:8000"])
     environment: str = Field(default="local")
     aliyundrive_upload: AliyunDriveUploadConfig = Field(default_factory=AliyunDriveUploadConfig)
+    local_forward: LocalForwardConfig = Field(default_factory=LocalForwardConfig)
 
     def save(self, config_path: str = "config.yaml"):
         # We need to be careful with .local override, but usually we save to the original if possible

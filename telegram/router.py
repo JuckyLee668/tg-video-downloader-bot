@@ -8,7 +8,16 @@ from downloader.manager import download_manager
 from telegram.client import tg_clients
 
 # 导入所有模块化的 handler
-from telegram.handlers import auth, channel, download, forward, search, storage, system
+from telegram.handlers import (
+    auth,
+    channel,
+    download,
+    forward,
+    local_forward,
+    search,
+    storage,
+    system,
+)
 from telegram.state_manager import state_manager
 
 # 命令映射表
@@ -35,6 +44,7 @@ COMMAND_MAP = {
     "cl": download.clear_cache_handler,
     "files": storage.storage_handler,
     "f": storage.storage_handler,
+    "lf": local_forward.local_forward_handler,
     "bf": forward.batch_forward_handler,
     "forward": forward.forward_link_handler,
 }
