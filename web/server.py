@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +25,7 @@ def create_app():
     app.include_router(api_router, prefix="/api")
 
     # Mount thumbnails static directory
-    thumb_dir = os.path.expanduser(config.save_path.rstrip("/downloads")) + "/../.tg_downloader_thumbs"
+    thumb_dir = Path(config.save_path).parent / ".tg_downloader_thumbs"
     if os.path.exists("/root/.tg_downloader_thumbs"):
         app.mount("/thumbs", StaticFiles(directory="/root/.tg_downloader_thumbs"), name="thumbs")
     elif os.path.exists(thumb_dir):
