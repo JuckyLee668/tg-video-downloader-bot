@@ -7,11 +7,15 @@
 - **Telegram Bot 控制**：私聊 Bot 即可登录用户客户端、连接频道、搜索、下载和转发。
 - **Web 控制台**：默认监听 `127.0.0.1:8000`，可查看队列、历史、频道、本地文件和登录状态。
 - **批量任务队列**：下载任务落 SQLite，worker 通过数据库原子领取任务，避免重复处理。
+- **文件去重**：按 chat_id + message_id 自动去重，同一文件不会重复下载。
+- **智能重命名**：支持 `{channel_title}/{date}_{original_name}` 等变量，可按频道/日期自动分目录。
+- **进度推送**：大文件下载时 Bot 实时推送进度百分比。
+- **频道自动监控**：定时扫描已连接频道，匹配关键词/媒体类型，自动创建下载任务。
+- **缩略图预览**：搜索结果中为视频和图片生成缩略图，支持 Web 端异步加载。
 - **下载安全**：保存文件名前做路径净化，避免非法文件名和路径穿越。
 - **搜索优化**：多频道搜索使用有限并发，兼顾速度和 Telegram 限流风险。
 - **自动转发**：下载完成后自动转发到指定聊天（如 Saved Messages）。
 - **阿里云盘上传**：下载完成后自动上传到阿里云盘指定目录。
-- **缩略图预览**：搜索结果中为视频和图片生成缩略图，支持 Web 端异步加载。
 - **状态持久化**：交互状态和任务进度持久化到 SQLite，重启不丢失。
 - **Web API 安全**：生产环境强制设置 `WEB_API_KEY`；API key 使用常量时间比较，连续失败会临时锁定。
 - **代理支持**：支持 HTTP 和 SOCKS5，可为全局或用户客户端配置代理。
@@ -36,6 +40,7 @@ telegram/              Telethon 客户端、路由、命令和频道搜索
   search_cache.py      搜索结果缓存
   state_manager.py     FSM 交互状态持久化
   limiter.py           消息频率限制
+  auto_watch.py        频道自动监控管理器
   handlers/
     auth.py            登录相关命令
     channel.py         频道连接/列表
@@ -46,6 +51,7 @@ telegram/              Telethon 客户端、路由、命令和频道搜索
     system.py          帮助/状态命令
     thumbnail.py       缩略图生成 (视频/图片)
     local_forward.py   下载后自动转发配置
+    watch_handler.py   频道自动监控配置命令
     utils.py           公用工具 (索引解析、格式化、文件名提取)
 
 web/                   FastAPI 应用、API 路由和请求模型
@@ -220,6 +226,55 @@ local_forward:
 
 下载完成后自动把文件转发到指定聊天（如 Saved Messages、群组）。可通过 Bot 命令 `/lf` 在线配置。
 
+### 文件去重
+
+```yaml
+file_dedup:
+  enabled: true
+  by_message_id: true   # 按 chat_id + message_id 去重
+  by_file_id: false     # 按 Telegram file_id 去重（更严格）
+```
+
+下载前自动检查是否已下载过，避免重复下载和存储。
+
+### 智能重命名
+
+```yaml
+file_rename:
+  enabled: false
+  pattern: "{channel_title}/{date}_{original_name}"
+```
+
+下载后自动重命名文件。可用变量：
+
+| 变量 | 说明 | 示例 |
+|------|------|------|
+| `{channel_title}` | 频道标题 | `MyChannel` |
+| `{channel_username}` | 频道用户名 | `@mychannel` |
+| `{date}` | 消息日期 | `2024_01` |
+| `{time}` | 消息时间 | `15_30_00` |
+| `{original_name}` | 原始文件名 | `video` |
+| `{ext}` | 文件扩展名 | `.mp4` |
+
+支持子目录（在 pattern 中使用 `/`）。
+
+### 进度推送
+
+```yaml
+progress_notification: true
+```
+
+大文件下载时 Bot 会每 20% 发送一次进度消息。可在聊天中通过 `/push` 命令实时调整推送频率。
+
+### 频道自动监控
+
+```yaml
+watch:
+  interval: 300   # 轮询间隔（秒）
+```
+
+通过 Bot 命令 `/watch` 在线管理监控规则。详见 Bot 命令章节。
+
 ### Web API 安全
 
 本地默认不要求 `WEB_API_KEY`。如果要让 Web 服务监听公网地址，必须设置强随机密钥：
@@ -282,6 +337,30 @@ user_api:
 | `/clear` 或 `/cl` | 清理当前用户搜索缓存 |
 | `/files` 或 `/f` | 查看/管理本地下载文件 |
 | `/lf` | 配置下载后自动转发 |
+| `/push` | 开启/关闭/设置下载进度推送间隔 |
+| `/rename` | 配置下载后智能重命名（开关/格式） |
+| `/watch` | 管理频道自动监控规则 |
+
+### 频道自动监控命令
+
+| 命令 | 说明 |
+|------|------|
+| `/watch` | 查看所有监控规则 |
+| `/watch add @channel [keyword]` | 添加规则（可选关键词） |
+| `/watch remove <id>` | 删除规则 |
+| `/watch on <id>` | 启用规则 |
+| `/watch off <id>` | 禁用规则 |
+
+监控规则会每 5 分钟自动扫描频道新消息，匹配规则后自动创建下载任务。关键词不区分大小写，留空则监控全部媒体。
+
+### 本地文件管理
+
+`/files` 命令支持以下子命令：
+
+- `/files` — 查看下载文件列表
+- `/files thumbs` — 查看缩略图缓存状态
+- `/files del <序号>` — 删除文件
+- `/files clear` — 清空全部下载文件
 
 ## Web 控制台
 
@@ -313,13 +392,23 @@ SQLite 数据库默认位于：
 data/telegram_downloader.db
 ```
 
+### 表结构
+
+| 表名 | 用途 |
+|------|------|
+| `download_queue` | 下载任务队列（pending → downloading → completed） |
+| `download_history` | 下载历史记录 |
+| `user_states` | 交互状态（FSM）持久化 |
+| `auto_watch` | 频道监控规则 |
+| `watch_state` | 监控状态（记录已读消息 ID） |
+
 下载任务会先写入 `download_queue`。worker 不直接信任内存队列，而是通过数据库原子领取任务：
 
 ```text
 pending/failed -> downloading -> completed/history
 ```
 
-交互状态（FSM）也会持久化到同一数据库，重启后自动恢复。
+交互状态（FSM）和频道监控状态也会持久化到同一数据库，重启后自动恢复。
 
 ## Docker
 
@@ -356,12 +445,20 @@ pytest
 ruff check core downloader telegram web tests
 ```
 
-当前测试覆盖：
+### 测试覆盖
 
-- 文件名净化和下载路径安全
-- SQLite 任务原子领取
-- 下载完成后的历史归档
-- Web API 请求模型约束
+测试覆盖以下核心模块（114 个测试用例）：
+
+| 模块 | 文件 | 覆盖内容 |
+|------|------|----------|
+| `core/paths.py` | `test_paths.py` | 文件名净化、路径穿越防护 |
+| `core/database.py` | `test_database.py` | 任务原子领取、完成归档 |
+| `core/config.py` | `test_config.py` | YAML/环境变量加载、配置默认值、本地覆写、持久化 |
+| `web/api_models.py` | `test_api_models.py` | 搜索/下载/转发/代理/登录模型约束验证 |
+| `telegram/handlers/utils.py` | `test_utils.py` | 序号解析、文件大小格式化、时间格式化、文件名提取 |
+| `telegram/search_cache.py` | `test_search_cache.py` | TTL 过期、容量上限、增删查 |
+| `telegram/limiter.py` | `test_limiter.py` | 每秒/每分钟限速、并发安全、历史过期 |
+| `telegram/auto_watch.py` | `test_watch_manager.py` | 媒体文件信息提取（视频/图片/音频/文档等） |
 
 ## CI
 
@@ -415,6 +512,13 @@ USER_API_HASH=
 ```text
 X-API-Key: your_strong_random_key
 ```
+
+### 搜索结果没有缩略图
+
+搜索 Bot 命令自动为前 15-20 条视频/图片生成缩略图。如果没有显示：
+- 确保用户客户端已登录（`/auth` 查看）
+- 视频没有内置缩略图时会跳过（下载整个视频抽帧开销太大）
+- Web 页面需要等待异步生成完成
 
 ### 公开部署注意事项
 
