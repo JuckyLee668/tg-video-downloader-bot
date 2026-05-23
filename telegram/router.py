@@ -14,7 +14,9 @@ from telegram.handlers import (
     download,
     forward,
     local_forward,
+    progress_push,
     search,
+    smart_rename,
     storage,
     system,
     watch_handler,
@@ -47,6 +49,8 @@ COMMAND_MAP = {
     "f": storage.storage_handler,
     "lf": local_forward.local_forward_handler,
     "watch": watch_handler.watch_handler,
+    "push": progress_push.progress_push_handler,
+    "rename": smart_rename.smart_rename_handler,
     "bf": forward.batch_forward_handler,
     "forward": forward.forward_link_handler,
 }

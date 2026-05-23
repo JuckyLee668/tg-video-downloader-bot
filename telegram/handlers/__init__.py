@@ -43,6 +43,8 @@ def setup_handlers():
                     types.BotCommand(command='clear', description='清理缓存'),
                     types.BotCommand(command='files', description='本地文件管理'),
                     types.BotCommand(command='lf', description='自动转发配置'),
+                    types.BotCommand(command='push', description='进度推送'),
+                    types.BotCommand(command='rename', description='智能重命名'),
                     types.BotCommand(command='watch', description='频道自动监控'),
                     types.BotCommand(command='help', description='完整菜单'),
                 ]
