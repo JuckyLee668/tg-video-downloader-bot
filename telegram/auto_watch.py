@@ -236,3 +236,6 @@ class WatchManager:
         if msg.document:
             return safe_name or f"doc_{msg.id}", "document"
         return f"media_{msg.id}", "unknown"
+
+
+watch_manager = WatchManager()
