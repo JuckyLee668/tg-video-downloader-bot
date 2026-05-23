@@ -145,6 +145,32 @@ class DatabaseManager:
                 ON download_history(channel_id, downloaded_at DESC)
             """)
 
+            # 频道自动监控规则
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS watch_rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner_chat_id TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    channel_title TEXT DEFAULT '',
+                    keyword TEXT DEFAULT '',
+                    media_type TEXT DEFAULT '',
+                    enabled INTEGER DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # 频道监控读取进度
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS watch_state (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner_chat_id TEXT NOT NULL,
+                    channel_id TEXT UNIQUE NOT NULL,
+                    last_read_id INTEGER DEFAULT 0,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(owner_chat_id, channel_id)
+                )
+            """)
+
             await db.execute("UPDATE download_queue SET status = 'pending' WHERE status = 'downloading'")
             await db.execute("UPDATE forwarded_queue SET status = 'pending' WHERE status = 'downloading'")
             await db.commit()
@@ -524,6 +550,102 @@ class DatabaseManager:
                     COALESCE((SELECT SUM(file_size) FROM download_history), 0) AS total_size
             """)
             return dict(await cursor.fetchone())
+
+    # ── 文件去重 ────────────────────────────────────────────
+
+    async def is_already_downloaded(self, chat_id: str, message_id: str) -> bool:
+        """按 message_id 去重"""
+        async with self._get_db() as db:
+            cursor = await db.execute(
+                "SELECT 1 FROM download_history WHERE chat_id = ? AND message_id = ? LIMIT 1",
+                (str(chat_id), str(message_id)),
+            )
+            return await cursor.fetchone() is not None
+
+    async def is_file_downloaded(self, file_id: str) -> bool:
+        """按 file_id 去重（严格模式）"""
+        if not file_id:
+            return False
+        async with self._get_db() as db:
+            cursor = await db.execute(
+                "SELECT 1 FROM download_history WHERE file_id = ? LIMIT 1",
+                (file_id,),
+            )
+            return await cursor.fetchone() is not None
+
+    # ── 频道自动监控 ────────────────────────────────────────
+
+    async def add_watch_rule(self, owner_chat_id: str, channel_id: str, channel_title: str = "", keyword: str = "", media_type: str = ""):
+        async with self._get_db() as db:
+            cursor = await db.execute("""
+                INSERT INTO watch_rules (owner_chat_id, channel_id, channel_title, keyword, media_type)
+                VALUES (?, ?, ?, ?, ?)
+            """, (str(owner_chat_id), str(channel_id), channel_title, keyword, media_type))
+            await db.commit()
+            return cursor.lastrowid
+
+    async def get_watch_rules(self, owner_chat_id: str = None):
+        async with self._get_db() as db:
+            db.row_factory = aiosqlite.Row
+            if owner_chat_id:
+                cursor = await db.execute(
+                    "SELECT * FROM watch_rules WHERE owner_chat_id = ? ORDER BY created_at DESC",
+                    (str(owner_chat_id),),
+                )
+            else:
+                cursor = await db.execute("SELECT * FROM watch_rules ORDER BY created_at DESC")
+            return [dict(r) for r in await cursor.fetchall()]
+
+    async def delete_watch_rule(self, rule_id: int, owner_chat_id: str = None):
+        async with self._get_db() as db:
+            if owner_chat_id:
+                await db.execute(
+                    "DELETE FROM watch_rules WHERE id = ? AND owner_chat_id = ?",
+                    (rule_id, str(owner_chat_id)),
+                )
+            else:
+                await db.execute("DELETE FROM watch_rules WHERE id = ?", (rule_id,))
+            await db.commit()
+
+    async def toggle_watch_rule(self, rule_id: int, enabled: bool):
+        async with self._get_db() as db:
+            await db.execute(
+                "UPDATE watch_rules SET enabled = ? WHERE id = ?",
+                (1 if enabled else 0, rule_id),
+            )
+            await db.commit()
+
+    async def get_watch_state(self, channel_id: str):
+        async with self._get_db() as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM watch_state WHERE channel_id = ?", (str(channel_id),)
+            )
+            return await cursor.fetchone()
+
+    async def update_watch_state(self, owner_chat_id: str, channel_id: str, last_read_id: int):
+        async with self._get_db() as db:
+            await db.execute("""
+                INSERT INTO watch_state (owner_chat_id, channel_id, last_read_id, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(owner_chat_id, channel_id) DO UPDATE SET
+                    last_read_id = excluded.last_read_id,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (str(owner_chat_id), str(channel_id), last_read_id))
+            await db.commit()
+
+    async def get_all_enabled_watch_rules(self):
+        """获取所有启用的监控规则（含频道信息）"""
+        async with self._get_db() as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("""
+                SELECT r.*, COALESCE(s.last_read_id, 0) as last_read_id
+                FROM watch_rules r
+                LEFT JOIN watch_state s ON r.channel_id = s.channel_id AND r.owner_chat_id = s.owner_chat_id
+                WHERE r.enabled = 1
+                ORDER BY r.channel_id
+            """)
+            return [dict(r) for r in await cursor.fetchall()]
 
 
 db_manager = DatabaseManager()

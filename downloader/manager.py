@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import json
 import re
 from pathlib import Path
@@ -21,6 +22,7 @@ class DownloadManager:
         self.worker_tasks: list[asyncio.Task] = []
         self.max_concurrent = max(1, int(config.max_download_task))
         self.forward_peer_cache: dict[str, Any] = {}
+        self._progress_msg_ids: dict[str, list[int]] = {}
 
     async def init(self):
         pending_tasks = await db_manager.get_pending_tasks()
@@ -34,6 +36,22 @@ class DownloadManager:
         logger.info(f"Download manager initialized with {self.max_concurrent} workers")
 
     async def add_task(self, task: Dict[str, Any]):
+        # File dedup check
+        if config.file_dedup.enabled:
+            chat_id = task.get("chat_id") or task.get("channel_id")
+            message_id = task.get("message_id")
+            file_id = task.get("file_id")
+
+            if config.file_dedup.by_message_id and chat_id and message_id:
+                if await db_manager.is_already_downloaded(str(chat_id), str(message_id)):
+                    logger.info(f"Dedup skipped (by_message_id): chat={chat_id}, msg={message_id}, file={task.get('file_name')}")
+                    return None
+
+            if config.file_dedup.by_file_id and file_id:
+                if await db_manager.is_file_downloaded(str(file_id)):
+                    logger.info(f"Dedup skipped (by_file_id): file_id={file_id}, file={task.get('file_name')}")
+                    return None
+
         task_id = await db_manager.add_download_task(task)
         await self.queue.put("wake")
         return task_id
@@ -76,7 +94,29 @@ class DownloadManager:
             if not download_client or not message_obj:
                 raise RuntimeError("No Telegram client could access this media message")
 
-            actual_path = await self._download_if_needed(download_client, message_obj, save_path, task)
+            # ── Progress notification setup ──────────────────────────────
+            progress_msg_ref = None
+            if config.progress_notification and tg_clients.bot_client:
+                requester_id = self._telegram_chat_id_or_none(
+                    task_data.get("requester_chat_id") or task.get("chat_id")
+                )
+                if requester_id:
+                    try:
+                        msg = await tg_clients.bot_client.send_message(
+                            requester_id,
+                            f"⏳ Downloading `{task.get('file_name')}` — 0%",
+                        )
+                        self._progress_msg_ids[task_id] = [msg.id]
+                        progress_msg_ref = self._progress_msg_ids[task_id]
+                    except Exception as e:
+                        logger.debug(f"Failed to send initial progress message: {e}")
+
+            actual_path = await self._download_if_needed(
+                download_client, message_obj, save_path, task,
+                bot_client=tg_clients.bot_client if config.progress_notification else None,
+                requester_chat_id=requester_id if config.progress_notification and progress_msg_ref else None,
+                progress_msg_ref=progress_msg_ref,
+            )
             await self._forward_if_requested(tg_clients, actual_path, task, task_data)
 
             # 自动上传到阿里云盘
@@ -158,7 +198,10 @@ class DownloadManager:
 
         return download_client, message_obj
 
-    async def _download_if_needed(self, client, message, save_path: Path, task: Dict[str, Any]) -> Path:
+    async def _download_if_needed(
+        self, client, message, save_path: Path, task: Dict[str, Any],
+        bot_client=None, requester_chat_id=None, progress_msg_ref=None,
+    ) -> Path:
         expected_size = int(task.get("file_size") or 0)
         if save_path.exists() and expected_size > 0 and save_path.stat().st_size == expected_size:
             logger.info(f"Existing complete file found, skipping download: {save_path.name}")
@@ -168,7 +211,10 @@ class DownloadManager:
             client,
             message,
             str(save_path),
-            self.create_progress_callback(task["task_id"]),
+            self.create_progress_callback(
+                task["task_id"], task.get("file_name", ""),
+                bot_client, requester_chat_id, progress_msg_ref,
+            ),
         )
         if actual_path is None:
             raise RuntimeError(f"Download returned None: {save_path}")
@@ -182,7 +228,62 @@ class DownloadManager:
         if actual_path != save_path and save_path.exists() and save_path.stat().st_size == 0:
             save_path.unlink(missing_ok=True)
 
+        # ── Smart rename ──────────────────────────────────────────────
+        if config.file_rename.enabled:
+            actual_path = await self._smart_rename(actual_path, message, task)
+
         return actual_path
+
+    async def _smart_rename(self, file_path: Path, message, task: Dict[str, Any]) -> Path:
+        """Rename downloaded file according to config.file_rename.pattern"""
+        now = datetime.datetime.now()
+        date_str = now.strftime("%Y-%m-%d")
+        time_str = now.strftime("%H%M%S")
+
+        # Extract channel info from the message object
+        channel_title = ""
+        channel_username = ""
+        try:
+            chat = getattr(message, "chat", None) or getattr(message, "peer_id", None)
+            if chat:
+                channel_title = getattr(chat, "title", "") or ""
+                channel_username = getattr(chat, "username", "") or ""
+        except Exception:
+            pass
+
+        original_name = file_path.stem
+        ext = file_path.suffix  # includes the dot, e.g. ".mp4"
+
+        pattern = config.file_rename.pattern
+        replacements = {
+            "{channel_title}": channel_title or "",
+            "{channel_username}": channel_username or "",
+            "{date}": date_str,
+            "{time}": time_str,
+            "{original_name}": original_name,
+            "{ext}": ext,
+        }
+
+        new_name = pattern
+        for placeholder, value in replacements.items():
+            new_name = new_name.replace(placeholder, value)
+
+        new_path = file_path.parent / new_name
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if new_path != file_path:
+            if new_path.exists():
+                counter = 1
+                stem = Path(new_name).stem
+                suffix = Path(new_name).suffix
+                while (file_path.parent / f"{stem}_{counter}{suffix}").exists():
+                    counter += 1
+                new_path = file_path.parent / f"{stem}_{counter}{suffix}"
+
+            file_path.rename(new_path)
+            logger.info(f"Smart renamed: {file_path.name} -> {new_path.name}")
+
+        return new_path
 
     async def _auto_forward_to_local(self, tg_clients, save_path: Path, task: Dict[str, Any]):
         """下载完成后自动转发到配置的本地聊天"""
@@ -362,12 +463,14 @@ class DownloadManager:
         match = re.search(r"WAIT_?(\d+)", message)
         return int(match.group(1)) if match else 30
 
-    def create_progress_callback(self, task_id: str):
+    def create_progress_callback(self, task_id: str, file_name: str = "",
+                                  bot_client=None, requester_chat_id=None, progress_msg_ref=None):
         last_update_time = 0.0
         last_progress = -1
+        last_notified_threshold = 0
 
         async def progress_callback(downloaded, total):
-            nonlocal last_update_time, last_progress
+            nonlocal last_update_time, last_progress, last_notified_threshold
             if not total:
                 return
 
@@ -379,6 +482,21 @@ class DownloadManager:
                 last_progress = progress
                 last_update_time = current_time
                 await db_manager.update_task_progress(task_id, progress)
+
+            # Progress push — edit message at 20% thresholds
+            if bot_client and requester_chat_id and progress_msg_ref is not None:
+                threshold = (progress // 20) * 20
+                if threshold > last_notified_threshold and threshold > 0:
+                    last_notified_threshold = threshold
+                    msg_id = progress_msg_ref[0]
+                    try:
+                        await bot_client.edit_message(
+                            requester_chat_id,
+                            msg_id,
+                            f"⏳ Downloading `{file_name}` — {threshold}%",
+                        )
+                    except Exception:
+                        pass
 
         return progress_callback
 

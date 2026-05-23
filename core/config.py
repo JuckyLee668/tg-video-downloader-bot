@@ -40,6 +40,20 @@ class LocalForwardConfig(BaseModel):
     target_chat: str = ""  # chat_id 或 @username
     delete_after_forward: bool = False
 
+
+class FileRenameConfig(BaseModel):
+    """下载后智能重命名"""
+    enabled: bool = False
+    # 可用变量: {channel_title} {channel_username} {date} {time} {original_name} {ext}
+    pattern: str = "{channel_title}/{date}_{original_name}"
+
+
+class FileDedupConfig(BaseModel):
+    """文件去重"""
+    enabled: bool = True
+    by_message_id: bool = True   # 按 chat_id + message_id 去重
+    by_file_id: bool = False     # 按 Telegram file_id 去重（更严格）
+
 class Config(BaseModel):
     bot_token: str = Field(default="")
     proxy: Optional[ProxyConfig] = None  # global proxy (default off)
@@ -67,6 +81,9 @@ class Config(BaseModel):
     environment: str = Field(default="local")
     aliyundrive_upload: AliyunDriveUploadConfig = Field(default_factory=AliyunDriveUploadConfig)
     local_forward: LocalForwardConfig = Field(default_factory=LocalForwardConfig)
+    file_rename: FileRenameConfig = Field(default_factory=FileRenameConfig)
+    file_dedup: FileDedupConfig = Field(default_factory=FileDedupConfig)
+    progress_notification: bool = Field(default=True)
 
     def save(self, config_path: str = "config.yaml"):
         # We need to be careful with .local override, but usually we save to the original if possible

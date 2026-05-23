@@ -34,6 +34,7 @@ async def help_handler(event, arg=None):
         "• `/clear` (`/cl`) — 清理下载队列和历史\n"
         "• `/files` (`/f`) — 查看/清理本地下载文件\n"
         "• `/lf` — 配置下载后自动转发\n"
+        "• `/watch` — 频道自动监控\n"
         "• `/help` — 返回完整菜单"
     )
     await event.respond(help_text)

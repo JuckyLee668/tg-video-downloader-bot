@@ -17,6 +17,7 @@ from telegram.handlers import (
     search,
     storage,
     system,
+    watch_handler,
 )
 from telegram.state_manager import state_manager
 
@@ -45,6 +46,7 @@ COMMAND_MAP = {
     "files": storage.storage_handler,
     "f": storage.storage_handler,
     "lf": local_forward.local_forward_handler,
+    "watch": watch_handler.watch_handler,
     "bf": forward.batch_forward_handler,
     "forward": forward.forward_link_handler,
 }

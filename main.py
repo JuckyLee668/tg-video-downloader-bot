@@ -27,6 +27,11 @@ async def main():
     setup_handlers()
     await download_manager.init()
 
+    # 启动频道自动监控
+    from telegram.auto_watch import watch_manager
+
+    await watch_manager.start()
+
     app = create_app()
     web_api_key = (os.getenv("WEB_API_KEY") or "").strip()
     if config.web_host == "0.0.0.0" and not web_api_key:

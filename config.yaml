@@ -27,6 +27,7 @@ media_types:
 proxy: null
 save_path: ./downloads
 environment: local
+progress_notification: true
 aliyundrive_upload:
   enabled: true
   remote_path: /video
@@ -35,6 +36,13 @@ local_forward:
   enabled: false
   target_chat: ''
   delete_after_forward: false
+file_rename:
+  enabled: false
+  pattern: '{channel_title}/{date}_{original_name}'
+file_dedup:
+  enabled: true
+  by_message_id: true
+  by_file_id: false
 user_api:
   api_hash: ''
   api_id: ''
