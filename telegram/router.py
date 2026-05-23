@@ -11,6 +11,7 @@ from telegram.client import tg_clients
 from telegram.handlers import (
     auth,
     channel,
+    cmd_aliyun,
     cmd_channel,
     cmd_download,
     cmd_forward,
@@ -62,6 +63,7 @@ COMMAND_MAP = {
     "push": progress_push.progress_push_handler,
     "rename": smart_rename.smart_rename_handler,
     "watch": watch_handler.watch_handler,
+    "aliyun": cmd_aliyun.aliyun_handler,
 }
 
 # 别名映射 (处理长短命令一致性)
