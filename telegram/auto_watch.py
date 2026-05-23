@@ -1,5 +1,4 @@
 import asyncio
-import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
@@ -9,6 +8,7 @@ from core.database import db_manager
 from downloader.manager import download_manager
 from telegram.client import tg_clients
 from telegram.search import searcher
+from telegram.handlers.utils import message_file_info
 
 
 class WatchManager:
@@ -174,7 +174,7 @@ class WatchManager:
         if not message.media:
             return
 
-        file_name, media_type = self._message_file_info(message)
+        file_name, media_type = message_file_info(message)
         message_text = (message.message or "").lower()
 
         for rule in rules:
@@ -215,27 +215,6 @@ class WatchManager:
             )
             break  # one rule per message is enough
 
-    @staticmethod
-    def _message_file_info(msg: Message) -> Tuple[str, str]:
-        """Extract (file_name, media_type) from a Telegram message.
-
-        Mirrors the logic in ChannelSearcher._message_file_info.
-        """
-        raw_name = msg.file.name if msg.file else None
-        safe_name = raw_name if (raw_name and os.path.splitext(raw_name)[0]) else None
-        if msg.video:
-            return safe_name or f"video_{msg.id}.mp4", "video"
-        if msg.photo:
-            return f"photo_{msg.id}.jpg", "photo"
-        if msg.audio:
-            return safe_name or f"audio_{msg.id}.mp3", "audio"
-        if msg.voice:
-            return f"voice_{msg.id}.ogg", "voice"
-        if msg.gif:
-            return safe_name or f"animation_{msg.id}.gif", "animation"
-        if msg.document:
-            return safe_name or f"doc_{msg.id}", "document"
-        return f"media_{msg.id}", "unknown"
 
 
 watch_manager = WatchManager()

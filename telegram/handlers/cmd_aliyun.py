@@ -11,24 +11,185 @@
 """
 
 import asyncio
+import os
+import platform
 import shutil
+import zipfile
 from pathlib import Path
 
+import httpx
 from loguru import logger
 
 from core.config import config
+
+REPO = "tickstep/aliyunpan"
+INSTALL_PATH = "/usr/local/bin/aliyunpan"
+GITHUB_API = f"https://api.github.com/repos/{REPO}/releases/latest"
+
+
+def _detect_os_arch() -> tuple[str, str, str, str]:
+    """Return (os_key, arch_key, ext, bin_name) for GitHub release assets.
+
+    Asset naming: aliyunpan-v{VERSION}-{os}-{arch}.zip
+    os: linux, windows, darwin
+    arch: amd64, arm64, x64 (windows), x86 (windows), arm64
+    """
+    system = platform.system()
+    machine = platform.machine().lower()
+
+    if system == "Windows":
+        bin_name = "aliyunpan.exe"
+        # tickstep/aliyunpan uses "x64" and "x86" for Windows, not "amd64"/"386"
+        if machine in ("amd64", "x86_64"):
+            arch = "x64"
+        elif machine in ("x86", "i386", "i686"):
+            arch = "x86"
+        else:
+            arch = "arm64"
+        os_key = "windows"
+    elif system == "Darwin":
+        bin_name = "aliyunpan"
+        arch = "amd64" if machine in ("amd64", "x86_64") else "arm64"
+        os_key = "darwin"
+    else:  # Linux
+        bin_name = "aliyunpan"
+        if machine in ("amd64", "x86_64"):
+            arch = "amd64"
+        elif machine in ("aarch64", "arm64", "armv8l"):
+            arch = "arm64"
+        elif "arm" in machine:
+            arch = "armv7" if "v7" in machine else "armv5"
+        elif "mips" in machine:
+            arch = machine
+        else:
+            arch = machine
+        os_key = "linux"
+
+    return (os_key, arch, ".zip", bin_name)
+
+
+def _install_path() -> Path:
+    """Return the target install path for the aliyunpan binary."""
+    if platform.system() == "Windows":
+        for p in (Path(p) for p in os.environ.get("PATH", "").split(";") if p):
+            cand = p / "aliyunpan.exe"
+            if p.is_dir():
+                try:
+                    test_file = p / ".aliyunpan_write_test"
+                    test_file.touch()
+                    test_file.unlink()
+                    return cand
+                except (OSError, PermissionError):
+                    continue
+        return Path.cwd() / "aliyunpan.exe"
+    return Path("/usr/local/bin/aliyunpan")
 
 
 def _find_aliyunpan() -> str | None:
     candidates = [
         shutil.which("aliyunpan"),
-        "/usr/local/bin/aliyunpan",
+        shutil.which("aliyunpan.exe"),
+        str(_install_path()),
         "/usr/bin/aliyunpan",
     ]
     for path in candidates:
-        if path and Path(path).is_file() and Path(path).is_file() and Path(path).stat().st_mode & 0o111:
-            return path
+        if path and Path(path).is_file():
+            try:
+                if Path(path).stat().st_mode & 0o111 or path.endswith(".exe"):
+                    return path
+            except OSError:
+                continue
     return None
+
+
+async def _ensure_aliyunpan() -> tuple[bool, str]:
+    """Auto-install aliyunpan CLI if missing. Returns (success, message)."""
+    if _find_aliyunpan():
+        return True, ""
+
+    os_key, arch, ext, bin_name = _detect_os_arch()
+    install_path = _install_path()
+
+    logger.info(f"aliyunpan CLI not found, attempting auto-install ({os_key}/{arch})...")
+
+    try:
+        # 1. Fetch latest release info
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(GITHUB_API)
+            resp.raise_for_status()
+            release = resp.json()
+            tag = release.get("tag_name", "unknown")
+
+        # 2. Find matching asset
+        # Asset name: aliyunpan-v{VERSION}-{os}-{arch}.zip
+        asset_name = None
+        download_url = None
+        for asset in release.get("assets", []):
+            name: str = asset.get("name", "")
+            expected = f"{os_key}-{arch}"
+            if expected in name.lower() and name.endswith(ext):
+                asset_name = asset.get("name")
+                download_url = asset.get("browser_download_url")
+                break
+
+        if not download_url:
+            return False, (
+                f"未找到 {os_key}-{arch} 版本的下载链接 (tag={tag})\n"
+                f"请手动下载: https://github.com/{REPO}/releases"
+            )
+
+        # 3. Download
+        dl_dir = Path("/root/.aliyunpan_install" if platform.system() != "Windows"
+                      else str(Path.home()) + "/.aliyunpan_install")
+        dl_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = dl_dir / asset_name
+
+        logger.info(f"Downloading {asset_name} for {os_key}/{arch}...")
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            resp2 = await client.get(download_url)
+            resp2.raise_for_status()
+            archive_path.write_bytes(resp2.content)
+
+        # 4. Extract (.zip)
+        extract_path = dl_dir / "extracted"
+        extract_path.mkdir(parents=True, exist_ok=True)
+
+        found_bin = None
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            zf.extractall(extract_path)
+            # Find the binary (at root or in subdir)
+            for root, _dirs, files in os.walk(extract_path):
+                for f in files:
+                    if f.lower() == bin_name.lower():
+                        found_bin = Path(root) / f
+                        break
+                if found_bin:
+                    break
+
+        if not found_bin or not found_bin.is_file():
+            shutil.rmtree(dl_dir, ignore_errors=True)
+            return False, "解压后未找到 aliyunpan 二进制文件"
+
+        # 5. Install
+        found_bin.chmod(0o755)
+        install_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(found_bin, install_path)
+        if platform.system() != "Windows":
+            install_path.chmod(0o755)
+
+        # 6. Cleanup
+        shutil.rmtree(dl_dir, ignore_errors=True)
+
+        logger.info(f"aliyunpan {tag} installed to {install_path}")
+        return True, f"✅ 已自动安装 aliyunpan CLI ({tag})"
+
+    except httpx.HTTPStatusError as e:
+        return False, f"GitHub API 请求失败 (HTTP {e.response.status_code})"
+    except httpx.TimeoutException:
+        return False, "下载超时，请稍后重试"
+    except Exception as e:
+        logger.exception(f"Auto-install aliyunpan failed: {e}")
+        return False, f"自动安装失败: {e}"
 
 
 async def _run_aliyunpan(*args: str, timeout: int = 30) -> tuple[int, str]:
@@ -54,8 +215,16 @@ async def _run_aliyunpan(*args: str, timeout: int = 30) -> tuple[int, str]:
 
 
 async def aliyun_handler(event, arg=None):
+    # Auto-install if missing
+    ok, msg = await _ensure_aliyunpan()
+    if not ok:
+        await event.respond(f"❌ {msg}\n请手动安装后重试: https://github.com/tickstep/aliyunpan/releases")
+        return
+    if msg:
+        await event.respond(msg)
+
     parts = (arg or "").strip().split(maxsplit=1)
-    sub = parts[0].lower() if parts[0] else ""
+    sub = parts[0].lower() if parts else ""
     rest = parts[1] if len(parts) > 1 else ""
 
     if not sub:

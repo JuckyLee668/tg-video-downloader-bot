@@ -238,15 +238,8 @@ class ChannelSearcher:
             })
         return dialogs
 
-    async def forward_messages(self, from_peer_id: Any, message_ids: List[int], to_peer_id: Any):
-        try:
-            await self.client.forward_messages(to_peer_id, message_ids, from_peer_id)
-            return True
-        except Exception as e:
-            logger.error(f"Failed to forward messages: {e}")
-            raise
-
     async def batch_add_tasks(self, messages: List[Message], chat_id: str, formats: Optional[List[str]] = None):
+        from telegram.handlers.utils import message_file_info
         from downloader.manager import download_manager
 
         count = 0
@@ -259,7 +252,7 @@ class ChannelSearcher:
             if not msg or not msg.media:
                 continue
 
-            file_name, media_type = self._message_file_info(msg)
+            file_name, media_type = message_file_info(msg)
             if media_type not in config.media_types:
                 continue
 
@@ -285,23 +278,6 @@ class ChannelSearcher:
             await download_manager.add_task(task)
             count += 1
         return count
-
-    def _message_file_info(self, msg: Message):
-        raw_name = msg.file.name
-        safe_name = raw_name if (raw_name and os.path.splitext(raw_name)[0]) else None
-        if msg.video:
-            return safe_name or f"video_{msg.id}.mp4", "video"
-        if msg.photo:
-            return f"photo_{msg.id}.jpg", "photo"
-        if msg.audio:
-            return safe_name or f"audio_{msg.id}.mp3", "audio"
-        if msg.voice:
-            return f"voice_{msg.id}.ogg", "voice"
-        if msg.gif:
-            return safe_name or f"animation_{msg.id}.gif", "animation"
-        if msg.document:
-            return safe_name or f"doc_{msg.id}", "document"
-        return f"media_{msg.id}", "unknown"
 
     async def join_channel(self, link: str):
         try:

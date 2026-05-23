@@ -43,16 +43,21 @@ telegram/              Telethon 客户端、路由、命令和频道搜索
   auto_watch.py        频道自动监控管理器
   handlers/
     auth.py            登录相关命令
-    channel.py         频道连接/列表
-    download.py        批量下载、队列、取消
-    forward.py         批量转发、链接转发
-    search.py          频道搜索命令
+    channel.py         频道连接/列表 (旧)
+    download.py        批量下载、队列、取消 (旧)
+    forward.py         批量转发、链接转发 (旧)
+    search.py          频道搜索命令 (旧)
+    cmd_channel.py     合并后的频道管理命令路由
+    cmd_download.py    合并后的下载命令路由
+    cmd_forward.py     合并后的转发命令路由
+    cmd_search.py      合并后的搜索命令路由
+    cmd_aliyun.py      阿里云盘管理 (/aliyun 命令 + 自动安装 CLI)
     storage.py         本地文件管理命令
     system.py          帮助/状态命令
     thumbnail.py       缩略图生成 (视频/图片)
     local_forward.py   下载后自动转发配置
     watch_handler.py   频道自动监控配置命令
-    utils.py           公用工具 (索引解析、格式化、文件名提取)
+    utils.py           公用工具 (索引解析、格式化、文件名提取、文件信息)
 
 web/                   FastAPI 应用、API 路由和请求模型
   server.py            FastAPI 应用创建
@@ -215,6 +220,14 @@ aliyundrive_upload:
 
 下载完成后自动上传文件到阿里云盘，可选上传后删除本地文件。
 
+**自动安装 CLI**：首次使用 `/aliyun` 命令时，如果系统未安装 `aliyunpan` CLI，Bot 会自动检测操作系统和 CPU 架构，从 [tickstep/aliyunpan](https://github.com/tickstep/aliyunpan) 下载对应版本的 `.zip` 并安装：
+
+| 平台 | 资产识别 | 安装路径 |
+|------|---------|---------|
+| Linux amd64/arm64 | `aliyunpan-v*-linux-*.zip` | `/usr/local/bin/aliyunpan` |
+| Windows x64/x86/arm64 | `aliyunpan-v*-windows-*.zip` | PATH 可写目录 |
+| macOS amd64/arm64 | `aliyunpan-v*-darwin-*.zip` | `/usr/local/bin/aliyunpan` |
+
 ### 下载后自动转发
 
 ```yaml
@@ -245,7 +258,7 @@ file_rename:
   pattern: "{channel_title}/{date}_{original_name}"
 ```
 
-下载后自动重命名文件。可用变量：
+下载后自动重命名文件。可用变量（默认 pattern 自动追加扩展名）：
 
 | 变量 | 说明 | 示例 |
 |------|------|------|
@@ -253,8 +266,10 @@ file_rename:
 | `{channel_username}` | 频道用户名 | `@mychannel` |
 | `{date}` | 消息日期 | `2024_01` |
 | `{time}` | 消息时间 | `15_30_00` |
-| `{original_name}` | 原始文件名 | `video` |
-| `{ext}` | 文件扩展名 | `.mp4` |
+| `{original_name}` | 原始文件名（不含扩展名） | `video` |
+| `{ext}` | 文件扩展名（含点号） | `.mp4` |
+
+> **注意**：即使 pattern 中未包含 `{ext}`，系统也会自动追加扩展名，确保文件不会丢失后缀。默认 pattern 为 `{channel_title}/{date}_{original_name}{ext}`。
 
 支持子目录（在 pattern 中使用 `/`）。
 
@@ -327,6 +342,7 @@ user_api:
 | `/search` | 搜索频道媒体 | `keyword xx`、`recent [n]`、`time <开始> <结束>`、`history` |
 | `/download` | 批量下载 | `[序号]`、`format <格式> [序号]` |
 | `/forward` | 批量转发 | `[序号]`、`to @目标 [序号]`、`link <url>` |
+| `/aliyun` | 阿里云盘管理 | `login`、`logout`、`ls`、`tree`、`on`、`off`、`path` |
 | `/push` | 下载进度推送 | `on`、`off` |
 | `/rename` | 智能重命名 | `set <pattern>`、`on`、`off` |
 | `/dl` | 查看下载队列 | — |
@@ -443,7 +459,7 @@ ruff check core downloader telegram web tests
 
 ### 测试覆盖
 
-测试覆盖以下核心模块（114 个测试用例）：
+测试覆盖以下核心模块（168 个测试用例）：
 
 | 模块 | 文件 | 覆盖内容 |
 |------|------|----------|
@@ -452,8 +468,12 @@ ruff check core downloader telegram web tests
 | `core/config.py` | `test_config.py` | YAML/环境变量加载、配置默认值、本地覆写、持久化 |
 | `web/api_models.py` | `test_api_models.py` | 搜索/下载/转发/代理/登录模型约束验证 |
 | `telegram/handlers/utils.py` | `test_utils.py` | 序号解析、文件大小格式化、时间格式化、文件名提取 |
+| `telegram/handlers/utils.py` | `test_utils_misc.py` | `message_file_info` 多类型文件信息提取 |
+| `telegram/handlers/cmd_aliyun.py` | `test_cmd_aliyun.py` | 命令路由、状态显示、自动安装、跨平台检测 |
+| `telegram/handlers/cmd_aliyun.py` | `test_aliyun_platform.py` | 多 OS/CPU 架构资产识别、安装路径 |
 | `telegram/search_cache.py` | `test_search_cache.py` | TTL 过期、容量上限、增删查 |
 | `telegram/limiter.py` | `test_limiter.py` | 每秒/每分钟限速、并发安全、历史过期 |
+| `telegram/state_manager.py` | `test_state_manager.py` | FSM 状态读写、隔离、清除 |
 | `telegram/auto_watch.py` | `test_watch_manager.py` | 媒体文件信息提取（视频/图片/音频/文档等） |
 
 ## CI

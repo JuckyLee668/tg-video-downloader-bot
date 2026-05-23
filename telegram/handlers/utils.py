@@ -1,4 +1,6 @@
+import os
 from datetime import datetime
+from typing import Tuple
 
 
 def parse_indices(indices_str: str) -> set[int]:
@@ -38,6 +40,25 @@ def format_size(size_bytes: int) -> str:
 def format_time(timestamp: float) -> str:
     """时间戳 → 月-日 时:分 字符串"""
     return datetime.fromtimestamp(timestamp).strftime("%m-%d %H:%M")
+
+
+def message_file_info(msg) -> Tuple[str, str]:
+    """从 Telegram Message 对象提取 (file_name, media_type)"""
+    raw_name = msg.file.name if msg.file else None
+    safe_name = raw_name if (raw_name and os.path.splitext(raw_name)[0]) else None
+    if msg.video:
+        return safe_name or f"video_{msg.id}.mp4", "video"
+    if msg.photo:
+        return f"photo_{msg.id}.jpg", "photo"
+    if msg.audio:
+        return safe_name or f"audio_{msg.id}.mp3", "audio"
+    if msg.voice:
+        return f"voice_{msg.id}.ogg", "voice"
+    if msg.gif:
+        return safe_name or f"animation_{msg.id}.gif", "animation"
+    if msg.document:
+        return safe_name or f"doc_{msg.id}", "document"
+    return f"media_{msg.id}", "unknown"
 
 
 def message_file_name(msg) -> str:

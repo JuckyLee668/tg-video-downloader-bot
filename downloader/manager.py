@@ -224,6 +224,15 @@ class DownloadManager:
         if not actual_path.exists() or actual_path.stat().st_size == 0:
             raise RuntimeError(f"Download finished but file is missing or empty: {actual_path}")
 
+        # If Telethon didn't add an extension, try to infer one from the message
+        if not actual_path.suffix and message.file and message.file.mime_type:
+            ext = self._mime_to_ext(message.file.mime_type)
+            if ext:
+                new_path = actual_path.with_suffix(ext)
+                actual_path.rename(new_path)
+                actual_path = new_path
+                logger.info(f"Added inferred extension {ext} -> {actual_path.name}")
+
         # If Telethon saved to a different path than save_path, remove the original placeholder
         if actual_path != save_path and save_path.exists() and save_path.stat().st_size == 0:
             save_path.unlink(missing_ok=True)
@@ -267,6 +276,10 @@ class DownloadManager:
         new_name = pattern
         for placeholder, value in replacements.items():
             new_name = new_name.replace(placeholder, value)
+
+        # Ensure extension is always preserved, even if pattern lacks {ext}
+        if ext and not new_name.endswith(ext):
+            new_name += ext
 
         new_path = file_path.parent / new_name
         new_path.parent.mkdir(parents=True, exist_ok=True)
@@ -462,6 +475,25 @@ class DownloadManager:
             return None
         match = re.search(r"WAIT_?(\d+)", message)
         return int(match.group(1)) if match else 30
+
+    @staticmethod
+    def _mime_to_ext(mime_type: str) -> str:
+        """Map MIME type to file extension (with dot)."""
+        mapping = {
+            "video/mp4": ".mp4", "video/x-matroska": ".mkv",
+            "video/webm": ".webm", "video/quicktime": ".mov",
+            "video/x-msvideo": ".avi", "video/mpeg": ".mpeg",
+            "audio/mpeg": ".mp3", "audio/mp4": ".m4a",
+            "audio/ogg": ".ogg", "audio/wav": ".wav",
+            "audio/flac": ".flac", "image/jpeg": ".jpg",
+            "image/png": ".png", "image/gif": ".gif",
+            "image/webp": ".webp", "application/pdf": ".pdf",
+            "application/zip": ".zip", "application/x-tar": ".tar.gz",
+            "application/x-7z-compressed": ".7z",
+            "application/x-rar-compressed": ".rar",
+            "text/plain": ".txt", "application/json": ".json",
+        }
+        return mapping.get(mime_type.split(";")[0].strip(), "")
 
     def create_progress_callback(self, task_id: str, file_name: str = "",
                                   bot_client=None, requester_chat_id=None, progress_msg_ref=None):

@@ -223,13 +223,30 @@ except:
     else
         warn "aliyunpan CLI 未安装，正在安装..."
         local ver="v0.3.9"
+        # Detect architecture
+        local arch
+        case "$(uname -m)" in
+            x86_64|amd64) arch="amd64" ;;
+            aarch64|arm64) arch="arm64" ;;
+            armv7l|armv7) arch="armv7" ;;
+            armv5l|armv5) arch="armv5" ;;
+            *) arch="amd64"; warn "未知架构 $(uname -m)，默认使用 amd64" ;;
+        esac
+        local zip_name="aliyunpan-${ver}-linux-${arch}.zip"
         local tmpdir="/root/.aliyunpan_install"
         mkdir -p "$tmpdir"
         cd "$tmpdir"
-        wget -q "https://github.com/tickstep/aliyunpan/releases/download/${ver}/aliyunpan-${ver}-linux-amd64.zip" \
+        wget -q "https://github.com/tickstep/aliyunpan/releases/download/${ver}/${zip_name}" \
             -O "aliyunpan.zip" || fail "下载 aliyunpan 失败"
         unzip -q aliyunpan.zip || fail "解压 aliyunpan 失败"
-        cp "aliyunpan-${ver}-linux-amd64/aliyunpan" /usr/local/bin/aliyunpan
+        local extracted_dir
+        extracted_dir=$(find "$tmpdir" -maxdepth 1 -type d -name "aliyunpan-*" | head -1)
+        if [ -n "$extracted_dir" ] && [ -f "$extracted_dir/aliyunpan" ]; then
+            cp "$extracted_dir/aliyunpan" /usr/local/bin/aliyunpan
+        else
+            # Try root-level binary
+            find "$tmpdir" -name "aliyunpan" -type f -exec cp {} /usr/local/bin/aliyunpan \;
+        fi
         chmod +x /usr/local/bin/aliyunpan
         rm -rf "$tmpdir"
         ok "aliyunpan CLI 已安装到 /usr/local/bin/aliyunpan"

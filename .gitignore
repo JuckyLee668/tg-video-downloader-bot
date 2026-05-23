@@ -6,6 +6,7 @@ venv/
 ENV/
 .env
 config.local.yaml
+config.yaml
 
 # Telegram Sessions
 *.session
