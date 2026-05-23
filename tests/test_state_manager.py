@@ -1,6 +1,5 @@
 """Tests for telegram/state_manager.py — simple FSM state management."""
 
-import pytest
 
 from telegram.state_manager import state_manager
 

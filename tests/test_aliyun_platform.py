@@ -3,8 +3,6 @@
 import os
 import platform
 
-import pytest
-
 from telegram.handlers.cmd_aliyun import _detect_os_arch, _install_path
 
 

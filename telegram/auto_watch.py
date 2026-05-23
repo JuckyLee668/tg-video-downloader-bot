@@ -7,8 +7,8 @@ from telethon.tl.types import Message
 from core.database import db_manager
 from downloader.manager import download_manager
 from telegram.client import tg_clients
-from telegram.search import searcher
 from telegram.handlers.utils import message_file_info
+from telegram.search import searcher
 
 
 class WatchManager:

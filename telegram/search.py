@@ -239,8 +239,8 @@ class ChannelSearcher:
         return dialogs
 
     async def batch_add_tasks(self, messages: List[Message], chat_id: str, formats: Optional[List[str]] = None):
-        from telegram.handlers.utils import message_file_info
         from downloader.manager import download_manager
+        from telegram.handlers.utils import message_file_info
 
         count = 0
         normalized_formats = None
