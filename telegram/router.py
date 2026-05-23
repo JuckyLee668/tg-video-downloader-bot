@@ -11,6 +11,10 @@ from telegram.client import tg_clients
 from telegram.handlers import (
     auth,
     channel,
+    cmd_channel,
+    cmd_download,
+    cmd_forward,
+    cmd_search,
     download,
     forward,
     local_forward,
@@ -32,6 +36,12 @@ COMMAND_MAP = {
     "s": system.status_handler,
     "auth": auth.auth_status_handler,
     "login": auth.login_handler,
+    # 合并命令
+    "channel": cmd_channel.channel_handler,
+    "search": cmd_search.search_handler,
+    "download": cmd_download.download_handler,
+    "forward": cmd_forward.forward_handler,
+    # 旧命令保留别名
     "cc": channel.connect_channel_handler,
     "channels": channel.channels_list_handler,
     "csk": search.search_keyword_handler,
@@ -40,6 +50,7 @@ COMMAND_MAP = {
     "sh": search.search_history_handler,
     "bd": download.batch_download_handler,
     "bdf": download.batch_download_formats_handler,
+    "bf": forward.batch_forward_handler,
     "dl": download.download_list_handler,
     "cancel": download.cancel_handler,
     "c": download.cancel_handler,
@@ -48,11 +59,9 @@ COMMAND_MAP = {
     "files": storage.storage_handler,
     "f": storage.storage_handler,
     "lf": local_forward.local_forward_handler,
-    "watch": watch_handler.watch_handler,
     "push": progress_push.progress_push_handler,
     "rename": smart_rename.smart_rename_handler,
-    "bf": forward.batch_forward_handler,
-    "forward": forward.forward_link_handler,
+    "watch": watch_handler.watch_handler,
 }
 
 # 别名映射 (处理长短命令一致性)

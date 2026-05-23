@@ -1,12 +1,21 @@
 adaptive_concurrency: true
+aliyundrive_upload:
+  delete_after_upload: true
+  enabled: true
+  remote_path: /video
 allowed_user_ids: []
 always_fresh_download: false
 batch_interval: 500
 batch_size: 20
-bot_token: ''
+bot_token: 8479400961:AAHKK-Ke9HO4sXrIM-MuiRyYX75emIuu7os
 chat: []
 date_format: '%Y_%m'
 enable_private_chat: true
+environment: local
+file_dedup:
+  by_file_id: false
+  by_message_id: true
+  enabled: true
 file_formats: {}
 file_name_prefix:
 - message_id
@@ -14,7 +23,14 @@ file_name_prefix:
 file_name_prefix_split: ' - '
 file_path_prefix:
 - chat_title
+file_rename:
+  enabled: true
+  pattern: '{channel_title}/{date}_{original_name}'
 group_same_channel_files: true
+local_forward:
+  delete_after_forward: false
+  enabled: false
+  target_chat: ''
 max_connected_channels: 10
 max_download_task: 3
 media_types:
@@ -24,26 +40,14 @@ media_types:
 - video
 - voice
 - animation
+progress_notification: true
 proxy: null
 save_path: ./downloads
-environment: local
-progress_notification: true
-aliyundrive_upload:
-  enabled: true
-  remote_path: /video
-  delete_after_upload: true
-local_forward:
-  enabled: false
-  target_chat: ''
-  delete_after_forward: false
-file_rename:
-  enabled: false
-  pattern: '{channel_title}/{date}_{original_name}'
-file_dedup:
-  enabled: true
-  by_message_id: true
-  by_file_id: false
 user_api:
-  api_hash: ''
-  api_id: ''
+  api_hash: db62a098851588b5fd97bbee6ddd1536
+  api_id: '30578955'
   proxy: null
+web_cors_origins:
+- '*'
+web_host: 0.0.0.0
+web_port: 8000
