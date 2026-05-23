@@ -22,7 +22,7 @@ def setup_handlers():
             from telethon import functions, types
             await bot(functions.bots.SetBotCommandsRequest(
                 scope=types.BotCommandScopeDefault(),
-                lang_code='en',
+                lang_code='',
                 commands=[
                     types.BotCommand(command='start', description='开始使用'),
                     types.BotCommand(command='auth', description='查看登录状态'),
