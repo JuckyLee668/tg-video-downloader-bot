@@ -182,11 +182,17 @@ class DownloadManager:
             if local_enabled:
                 await self._auto_forward_to_local(tg_clients, actual_path, task)
 
-            delete_after = bool(task_data.get("delete_after_forward", False))
+            # ── Cleanup: delete local file if configured ───────────
+            should_delete = bool(task_data.get("delete_after_forward", False))
+            # aliyundrive may have already deleted it; check existence first
+            if should_delete and actual_path.exists():
+                actual_path.unlink(missing_ok=True)
+                logger.info(f"Deleted local file after forward: {actual_path.name}")
+
             await db_manager.complete_download_task(
                 task,
                 {
-                    "download_path": "" if delete_after else str(actual_path),
+                    "download_path": "" if should_delete else str(actual_path),
                     "status": "completed",
                 },
             )
@@ -523,7 +529,6 @@ class DownloadManager:
         if not tg_clients.user_client or not await tg_clients.user_client.is_user_authorized():
             raise RuntimeError("User client is required for forwarding")
 
-        delete_after = bool(task_data.get("delete_after_forward", False))
         video_attrs = self._video_attrs_cache.pop(task["task_id"], {})
         try:
             peer, reply_to = await self._resolve_forward_peer(tg_clients.user_client, forward_target)
@@ -564,9 +569,6 @@ class DownloadManager:
                 )
             else:
                 raise
-        finally:
-            if delete_after and save_path.exists():
-                save_path.unlink(missing_ok=True)
 
     async def _resolve_forward_peer(self, client, target: Any):
         """Resolve a forward target to (peer, reply_to_msg_id).
