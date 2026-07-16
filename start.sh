@@ -287,7 +287,7 @@ install_dependencies_if_needed() {
 
     if [[ "$current_hash" == "$previous_hash" ]]; then
         ok "依赖已是最新"
-        return
+        return 0
     fi
 
     info "安装 Python 依赖..."
@@ -332,7 +332,7 @@ ensure_template() {
     local target="$1" template="$2" label="$3"
     if [[ -f "$target" ]]; then
         ok "$label 已存在"
-        return
+        return 0
     fi
     if [[ -f "$template" ]]; then
         cp "$template" "$target"
@@ -419,7 +419,7 @@ except:
     print('false')
 " 2>/dev/null) || true
 
-    [[ "$enabled" == "true" ]] || return
+    [[ "$enabled" == "true" ]] || return 0
 
     info "阿里云盘上传已启用，检查环境..."
 
@@ -443,9 +443,9 @@ except:
         wget -q "https://github.com/tickstep/aliyunpan/releases/download/${ver}/${zip_name}" -O aliyunpan.zip || {
             cd /; rm -rf "$tmpdir"
             warn "下载 aliyunpan 失败，跳过（不影响 bot 核心功能）"
-            return
+            return 0
         }
-        unzip -q aliyunpan.zip || { cd /; rm -rf "$tmpdir"; warn "解压 aliyunpan 失败"; return; }
+        unzip -q aliyunpan.zip || { cd /; rm -rf "$tmpdir"; warn "解压 aliyunpan 失败"; return 0; }
         find "$tmpdir" -name "aliyunpan" -type f -exec cp {} /usr/local/bin/aliyunpan \; 2>/dev/null || true
         chmod +x /usr/local/bin/aliyunpan 2>/dev/null || true
         cd /; rm -rf "$tmpdir"
@@ -472,7 +472,7 @@ except:
     fi
 }
 
-setup_aliyundrive
+setup_aliyundrive || true
 
 # ── 9. Data directory ────────────────────────────────────────────────
 
