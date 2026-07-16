@@ -200,7 +200,10 @@ async def _enqueue_task(event, info: dict, source_type: str, source_data: dict,
         "task_data": task_data,
     }
 
-    await download_manager.add_task(task)
+    result = await download_manager.add_task(task)
+    if result == "duplicate":
+        await event.respond(f"⚠️ 已下载过，跳过：\n🎬 `{file_name}`")
+        return
 
     labels = {
         "download": f"📥 已加入队列：下载到本地\n🎬 `{file_name}`",

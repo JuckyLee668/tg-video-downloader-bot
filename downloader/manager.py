@@ -38,8 +38,13 @@ class DownloadManager:
         logger.info(f"Download manager initialized with {self.max_concurrent} workers")
 
     async def add_task(self, task: Dict[str, Any]):
-        # File dedup check
-        if config.file_dedup.enabled:
+        """Add a task to the download queue. Returns task_id, or 'duplicate' if deduped."""
+        task_data = self._loads_task_data(task.get("task_data"))
+        is_external = task_data.get("source_type") == "external"
+
+        # File dedup check — skip for external tasks (message_id is a URL hash,
+        # not a real Telegram message, so the user may legitimately re-request)
+        if config.file_dedup.enabled and not is_external:
             chat_id = task.get("chat_id") or task.get("channel_id")
             message_id = task.get("message_id")
             file_id = task.get("file_id")
@@ -49,14 +54,14 @@ class DownloadManager:
                     logger.info(
                         f"Dedup skipped (by_message_id): chat={chat_id}, msg={message_id}, file={task.get('file_name')}"
                     )
-                    return None
+                    return "duplicate"
 
             if config.file_dedup.by_file_id and file_id:
                 if await db_manager.is_file_downloaded(str(file_id)):
                     logger.info(
                         f"Dedup skipped (by_file_id): file_id={file_id}, file={task.get('file_name')}"
                     )
-                    return None
+                    return "duplicate"
 
         task_id = await db_manager.add_download_task(task)
         await self.queue.put("wake")
