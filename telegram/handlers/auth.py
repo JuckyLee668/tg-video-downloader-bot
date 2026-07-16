@@ -4,12 +4,20 @@ from telegram.state_manager import state_manager
 
 
 async def login_handler(event, arg=None):
-    """无参数时显示登录状态，带参数时开始登录流程。"""
+    """无参数时显示登录状态，带参数时直接开始登录流程。"""
     if not arg:
         return await _show_login_status(event)
 
-    await event.respond("🔑 请输入您的手机号 (国际格式，如 +86138...)：")
-    await state_manager.set(event.chat_id, {'command': 'login', 'step': 'phone'})
+    # arg is the phone number — strip spaces and start login directly
+    phone = arg.strip().replace(" ", "")
+    await _send_code(event, phone)
+
+
+async def _send_code(event, phone: str):
+    """Send verification code for the given phone number."""
+    await tg_clients.send_code(phone)
+    await event.respond("📩 验证码已发送！请输入收到的验证码（注意：每一位数字减一后输入）。")
+    await state_manager.set(event.chat_id, {'command': 'login', 'step': 'code', 'phone': phone})
 
 
 async def _show_login_status(event):
