@@ -380,6 +380,14 @@ class TestAliyunTree:
 
 
 class TestAliyunToggle:
+    @pytest.fixture(autouse=True)
+    def patch_deps(self, monkeypatch):
+        """Prevent _ensure_aliyunpan from trying to download the binary in CI."""
+        monkeypatch.setattr(
+            "telegram.handlers.cmd_aliyun._find_aliyunpan",
+            lambda: "/usr/local/bin/aliyunpan",
+        )
+
     async def test_enable(self, mock_event, monkeypatch):
         cfg_mock = MagicMock()
         cfg_mock.aliyundrive_upload = MagicMock()
@@ -414,6 +422,14 @@ class TestAliyunToggle:
 
 
 class TestAliyunSetPath:
+    @pytest.fixture(autouse=True)
+    def patch_deps(self, monkeypatch):
+        """Prevent _ensure_aliyunpan from trying to download the binary in CI."""
+        monkeypatch.setattr(
+            "telegram.handlers.cmd_aliyun._find_aliyunpan",
+            lambda: "/usr/local/bin/aliyunpan",
+        )
+
     async def test_set_path(self, mock_event, monkeypatch):
         cfg_mock = MagicMock()
         cfg_mock.aliyundrive_upload = MagicMock()
