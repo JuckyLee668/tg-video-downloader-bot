@@ -89,42 +89,43 @@ async def main():
 
     from telethon.errors.rpcerrorlist import AuthKeyDuplicatedError
 
-    while True:
-        server = uvicorn.Server(server_config)
-        try:
-            tasks = [server.serve()]
-            if tg_clients.bot_client:
-                tasks.append(tg_clients.bot_client.run_until_disconnected())
+    try:
+        while True:
+            server = uvicorn.Server(server_config)
+            try:
+                tasks = [server.serve()]
+                if tg_clients.bot_client:
+                    tasks.append(tg_clients.bot_client.run_until_disconnected())
 
-            if tg_clients.user_client:
-                if await tg_clients.user_client.is_user_authorized():
-                    tasks.append(tg_clients.user_client.run_until_disconnected())
-                else:
-                    logger.warning("Telegram user client is not logged in; bot client only")
+                if tg_clients.user_client:
+                    if await tg_clients.user_client.is_user_authorized():
+                        tasks.append(tg_clients.user_client.run_until_disconnected())
+                    else:
+                        logger.warning("Telegram user client is not logged in; bot client only")
 
-            await asyncio.gather(*tasks)
-            break  # Normal exit — don't loop
-        except AuthKeyDuplicatedError:
-            logger.error(
-                "Auth key 已失效（IP 冲突），正在重置所有 session 并自动重连..."
-            )
-            tg_clients.reset_bot_session()
-            tg_clients.reset_user_session()
-            # Disconnect any open connections before re-init
-            if tg_clients.bot_client:
-                await tg_clients.bot_client.disconnect()
-            if tg_clients.user_client:
-                await tg_clients.user_client.disconnect()
-            # Reinitialize clients
-            await tg_clients.init()
-            # Re-register handlers (they may reference the old client)
-            from telegram.handlers import setup_handlers
-            setup_handlers()
-            logger.info("Session 已重置，继续运行...")
-            continue
-        except (asyncio.CancelledError, KeyboardInterrupt):
-            logger.info("Shutting down application")
-            break
+                await asyncio.gather(*tasks)
+                break  # Normal exit — don't loop
+            except AuthKeyDuplicatedError:
+                logger.error(
+                    "Auth key 已失效（IP 冲突），正在重置所有 session 并自动重连..."
+                )
+                tg_clients.reset_bot_session()
+                tg_clients.reset_user_session()
+                # Disconnect any open connections before re-init
+                if tg_clients.bot_client:
+                    await tg_clients.bot_client.disconnect()
+                if tg_clients.user_client:
+                    await tg_clients.user_client.disconnect()
+                # Reinitialize clients
+                await tg_clients.init()
+                # Re-register handlers (they may reference the old client)
+                from telegram.handlers import setup_handlers
+                setup_handlers()
+                logger.info("Session 已重置，继续运行...")
+                continue
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                logger.info("Shutting down application")
+                break
     finally:
         for worker in download_manager.worker_tasks:
             worker.cancel()
