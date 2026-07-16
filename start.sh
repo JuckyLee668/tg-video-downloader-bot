@@ -226,8 +226,8 @@ ok "包管理器: ${PKG_MANAGER:-未检测到（将跳过自动安装）}"
 ensure_cmd python3 "Python 3" true
 ensure_cmd wget    "wget"    true
 ensure_cmd unzip   "unzip"   true
-ensure_cmd ffmpeg  "ffmpeg (yt-dlp 合并视频需要)" false
-ensure_cmd git     "git"     false
+ensure_cmd ffmpeg  "ffmpeg (yt-dlp 合并视频需要)" false || true
+ensure_cmd git     "git"     false || true
 
 # ── 2. Python environment ────────────────────────────────────────────
 
