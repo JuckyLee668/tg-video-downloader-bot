@@ -368,6 +368,11 @@ async def state_handler(event):
                 else:
                     await event.respond("⚠️ 无效输入，请回复数字 1（排除并继续）或 2（取消任务）。")
 
+        # --- SEARCH SELECT (autofwd post-search index selection) ---
+        elif cmd == 'search_select':
+            from telegram.handlers.search import handle_search_select
+            await handle_search_select(event, state)
+
         # --- TW (Twitter) STATE ---
         elif cmd == 'tw':
             from telegram.handlers import cmd_x

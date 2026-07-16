@@ -18,9 +18,57 @@ from telegram.client import tg_clients
 from telegram.handlers import setup_handlers
 from web.server import create_app
 
+PID_FILE = PROJECT_ROOT / "data" / "bot.pid"
+
+
+def _acquire_pid_lock() -> int:
+    """Write PID file and return our PID.
+
+    Refuses to start if another instance is already running (stale PID
+    files are detected and overwritten automatically).
+    """
+    pid_file = str(PID_FILE)
+    pid = os.getpid()
+
+    if os.path.exists(pid_file):
+        try:
+            with open(pid_file) as f:
+                old_pid = int(f.read().strip())
+            # Check whether the old process is still alive
+            try:
+                os.kill(old_pid, 0)
+            except OSError:
+                logger.warning(f"Stale PID file found (pid {old_pid} is gone), overwriting")
+            else:
+                logger.error(
+                    f"Another bot instance is already running (pid {old_pid}). "
+                    f"If you are sure it has stopped, delete {pid_file} and try again."
+                )
+                sys.exit(1)
+        except (ValueError, FileNotFoundError):
+            pass
+
+    os.makedirs(os.path.dirname(pid_file), exist_ok=True)
+    with open(pid_file, "w") as f:
+        f.write(str(pid))
+    logger.info(f"PID lock acquired → {pid_file} ({pid})")
+    return pid
+
+
+def _release_pid_lock():
+    """Remove the PID file on clean shutdown."""
+    pid_file = str(PID_FILE)
+    try:
+        os.remove(pid_file)
+        logger.info("PID lock released")
+    except FileNotFoundError:
+        pass
+
 
 async def main():
     logger.info("Starting Telegram media downloader")
+
+    _acquire_pid_lock()
 
     await db_manager.init()
     await tg_clients.init()
@@ -63,6 +111,8 @@ async def main():
             await tg_clients.bot_client.disconnect()
         if tg_clients.user_client:
             await tg_clients.user_client.disconnect()
+        await db_manager.close()
+        _release_pid_lock()
         logger.info("Application stopped")
 
 
