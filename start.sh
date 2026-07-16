@@ -69,53 +69,165 @@ echo ""
 
 info "检查系统工具..."
 
+# Detect package manager
+detect_pkg_manager() {
+    if command -v apt-get &>/dev/null; then
+        echo "apt"
+    elif command -v dnf &>/dev/null; then
+        echo "dnf"
+    elif command -v yum &>/dev/null; then
+        echo "yum"
+    elif command -v brew &>/dev/null; then
+        echo "brew"
+    elif command -v apk &>/dev/null; then
+        echo "apk"
+    elif command -v pacman &>/dev/null; then
+        echo "pacman"
+    else
+        echo ""
+    fi
+}
+
+PKG_MANAGER=$(detect_pkg_manager)
+
+pkg_install() {
+    # Install one or more packages using the detected package manager.
+    # Requires sudo for system managers; brew runs without.
+    local pkgs=("$@")
+    info "安装: ${pkgs[*]}"
+
+    case "$PKG_MANAGER" in
+        apt)
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq "${pkgs[@]}" || return 1
+            ;;
+        dnf)
+            sudo dnf install -y -q "${pkgs[@]}" || return 1
+            ;;
+        yum)
+            sudo yum install -y -q "${pkgs[@]}" || return 1
+            ;;
+        brew)
+            brew install "${pkgs[@]}" || return 1
+            ;;
+        apk)
+            sudo apk add --no-cache "${pkgs[@]}" || return 1
+            ;;
+        pacman)
+            sudo pacman -S --noconfirm --needed "${pkgs[@]}" || return 1
+            ;;
+        *)
+            warn "未检测到包管理器，无法自动安装: ${pkgs[*]}"
+            return 1
+            ;;
+    esac
+}
+
+pkg_map_name() {
+    # Map generic tool name → package name for the detected manager.
+    local tool="$1"
+    case "$PKG_MANAGER" in
+        apt|apt-get)
+            case "$tool" in
+                python3)   echo "python3 python3-venv python3-pip" ;;
+                wget)      echo "wget" ;;
+                unzip)     echo "unzip" ;;
+                ffmpeg)    echo "ffmpeg" ;;
+                git)       echo "git" ;;
+                *)         echo "$tool" ;;
+            esac
+            ;;
+        dnf|yum)
+            case "$tool" in
+                python3)   echo "python3 python3-pip" ;;
+                wget)      echo "wget" ;;
+                unzip)     echo "unzip" ;;
+                ffmpeg)    echo "ffmpeg" ;;
+                git)       echo "git" ;;
+                *)         echo "$tool" ;;
+            esac
+            ;;
+        brew)
+            case "$tool" in
+                python3)   echo "python@3.13" ;;
+                wget)      echo "wget" ;;
+                unzip)     echo "unzip" ;;
+                ffmpeg)    echo "ffmpeg" ;;
+                git)       echo "git" ;;
+                *)         echo "$tool" ;;
+            esac
+            ;;
+        apk)
+            case "$tool" in
+                python3)   echo "python3 py3-pip py3-venv" ;;
+                wget)      echo "wget" ;;
+                unzip)     echo "unzip" ;;
+                ffmpeg)    echo "ffmpeg" ;;
+                git)       echo "git" ;;
+                *)         echo "$tool" ;;
+            esac
+            ;;
+        pacman)
+            case "$tool" in
+                python3)   echo "python python-pip" ;;
+                wget)      echo "wget" ;;
+                unzip)     echo "unzip" ;;
+                ffmpeg)    echo "ffmpeg" ;;
+                git)       echo "git" ;;
+                *)         echo "$tool" ;;
+            esac
+            ;;
+        *) echo "$tool" ;;
+    esac
+}
+
 check_cmd() {
     if command -v "$1" &>/dev/null; then
         ok "$1 ($(command -v "$1"))"
         return 0
     else
-        warn "$1 未安装"
         return 1
     fi
 }
 
-MISSING_TOOLS=()
+ensure_cmd() {
+    # Check a command; if missing, auto-install it.
+    local tool="$1" label="${2:-$1}" required="${3:-true}"
 
-check_cmd python3 || {
-    # Maybe just 'python'
-    command -v python &>/dev/null || MISSING_TOOLS+=("python3 (>=3.11)")
+    if check_cmd "$tool"; then
+        # Show version for ffmpeg
+        [[ "$tool" == "ffmpeg" ]] && ok "ffmpeg: $(ffmpeg -version 2>&1 | head -1)"
+        return 0
+    fi
+
+    if [[ "$required" != "true" ]]; then
+        warn "$label 未安装（非必需，跳过）"
+        return 1
+    fi
+
+    warn "$label 未安装 → 自动安装..."
+    if [[ -z "$PKG_MANAGER" ]]; then
+        fail "未检测到包管理器，请手动安装: $label"
+    fi
+
+    local pkg_names
+    pkg_names=$(pkg_map_name "$tool")
+    if pkg_install $pkg_names; then
+        if check_cmd "$tool"; then
+            ok "$label ($(command -v "$tool"))"
+            return 0
+        fi
+    fi
+    fail "$label 安装失败，请手动安装"
 }
 
-check_cmd wget || MISSING_TOOLS+=("wget")
-check_cmd unzip || MISSING_TOOLS+=("unzip")
+ok "包管理器: ${PKG_MANAGER:-未检测到（将跳过自动安装）}"
 
-# ffmpeg — optional but highly recommended for yt-dlp
-if check_cmd ffmpeg; then
-    FFMPEG_VER=$(ffmpeg -version 2>&1 | head -1)
-    ok "ffmpeg: $FFMPEG_VER"
-else
-    MISSING_TOOLS+=("ffmpeg (yt-dlp 合并视频需要)")
-fi
-
-# git — only needed for updates
-check_cmd git || true
-
-if [[ ${#MISSING_TOOLS[@]} -gt 0 ]]; then
-    echo ""
-    warn "缺少以下工具，请先安装："
-    for t in "${MISSING_TOOLS[@]}"; do
-        echo "       - $t"
-    done
-    echo ""
-    echo "   Debian/Ubuntu: apt install python3 python3-venv wget unzip ffmpeg"
-    echo "   CentOS/RHEL:   yum install python3 python3-pip wget unzip ffmpeg"
-    echo "   macOS:         brew install python3 wget ffmpeg"
-    echo ""
-    # wget/unzip are hard requirements for aliyunpan install
-    if [[ " ${MISSING_TOOLS[*]} " =~ " wget " ]] || [[ " ${MISSING_TOOLS[*]} " =~ " unzip " ]]; then
-        fail "wget 和 unzip 是必需的依赖，请先安装"
-    fi
-fi
+ensure_cmd python3 "Python 3" true
+ensure_cmd wget    "wget"    true
+ensure_cmd unzip   "unzip"   true
+ensure_cmd ffmpeg  "ffmpeg (yt-dlp 合并视频需要)" false
+ensure_cmd git     "git"     false
 
 # ── 2. Python environment ────────────────────────────────────────────
 
