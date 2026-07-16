@@ -91,6 +91,8 @@ class TelegramClientWrapper:
                     "Bot session 的 auth key 已失效（可能因为从不同 IP 同时使用），"
                     "正在重置 session 并重试..."
                 )
+                # Disconnect the failed client first to clean up background tasks
+                await self.bot_client.disconnect()
                 self.reset_bot_session()
                 self.bot_client = TelegramClient(
                     "bot_session",
@@ -124,6 +126,8 @@ class TelegramClientWrapper:
                     "User session 的 auth key 已失效（可能因为从不同 IP 同时使用），"
                     "正在清除 session，请重新 /login"
                 )
+                # Disconnect the failed client first to clean up background tasks
+                await self.user_client.disconnect()
                 self.reset_user_session()
                 self.user_client = TelegramClient(
                     StringSession(""),

@@ -119,7 +119,6 @@ async def main():
                 # Reinitialize clients
                 await tg_clients.init()
                 # Re-register handlers (they may reference the old client)
-                from telegram.handlers import setup_handlers
                 setup_handlers()
                 logger.info("Session 已重置，继续运行...")
                 continue
