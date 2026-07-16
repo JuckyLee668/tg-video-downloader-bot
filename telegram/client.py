@@ -1,8 +1,10 @@
 import os
+from pathlib import Path
 from typing import Optional
 
 from loguru import logger
 from telethon import TelegramClient
+from telethon.errors.rpcerrorlist import AuthKeyDuplicatedError
 from telethon.sessions import StringSession
 
 from core.config import ProxyConfig, config
@@ -49,6 +51,23 @@ class TelegramClientWrapper:
         self.phone = None
         self.phone_code_hash = None
 
+    def reset_bot_session(self):
+        """Delete the invalidated bot session file so it can be recreated."""
+        session_path = Path("bot_session.session")
+        if session_path.exists():
+            session_path.unlink()
+            logger.warning("已删除失效的 bot_session.session，将重新创建")
+        # Also clean up the live session if present
+        live_path = Path("bot_session_live.session")
+        if live_path.exists():
+            live_path.unlink()
+
+    def reset_user_session(self):
+        """Delete the invalidated user session string so the admin can re-login."""
+        if os.path.exists(self.session_file):
+            os.remove(self.session_file)
+            logger.warning(f"已删除失效的 {self.session_file}，请重新 /login")
+
     async def init(self):
         # Bot uses global proxy; user client prefers dedicated proxy when provided
         bot_proxy = get_proxy_dict(config.proxy)
@@ -57,15 +76,31 @@ class TelegramClientWrapper:
         # Initialize Bot Client
         if config.bot_token:
             logger.info(f"Init bot client with proxy={bot_proxy}")
-            self.bot_client = TelegramClient(
-                "bot_session",
-                int(config.user_api.api_id or 0),
-                config.user_api.api_hash or "",
-                proxy=bot_proxy,
-                **TELETHON_KWARGS,
-            )
-            await self.bot_client.start(bot_token=config.bot_token)
-            logger.info("Telegram Bot 客户端已启动 (MTProto)")
+            try:
+                self.bot_client = TelegramClient(
+                    "bot_session",
+                    int(config.user_api.api_id or 0),
+                    config.user_api.api_hash or "",
+                    proxy=bot_proxy,
+                    **TELETHON_KWARGS,
+                )
+                await self.bot_client.start(bot_token=config.bot_token)
+                logger.info("Telegram Bot 客户端已启动 (MTProto)")
+            except AuthKeyDuplicatedError:
+                logger.error(
+                    "Bot session 的 auth key 已失效（可能因为从不同 IP 同时使用），"
+                    "正在重置 session 并重试..."
+                )
+                self.reset_bot_session()
+                self.bot_client = TelegramClient(
+                    "bot_session",
+                    int(config.user_api.api_id or 0),
+                    config.user_api.api_hash or "",
+                    proxy=bot_proxy,
+                    **TELETHON_KWARGS,
+                )
+                await self.bot_client.start(bot_token=config.bot_token)
+                logger.info("Telegram Bot 客户端已重新连接 (session 已重置)")
 
         # Initialize User Client
         if config.user_api.api_id and config.user_api.api_hash:
@@ -75,14 +110,29 @@ class TelegramClientWrapper:
                     session_str = f.read().strip()
 
             logger.info(f"Init user client with proxy={user_proxy}")
-            self.user_client = TelegramClient(
-                StringSession(session_str),
-                int(config.user_api.api_id),
-                config.user_api.api_hash,
-                proxy=user_proxy,
-                **TELETHON_KWARGS,
-            )
-            await self.user_client.connect()
+            try:
+                self.user_client = TelegramClient(
+                    StringSession(session_str),
+                    int(config.user_api.api_id),
+                    config.user_api.api_hash,
+                    proxy=user_proxy,
+                    **TELETHON_KWARGS,
+                )
+                await self.user_client.connect()
+            except AuthKeyDuplicatedError:
+                logger.error(
+                    "User session 的 auth key 已失效（可能因为从不同 IP 同时使用），"
+                    "正在清除 session，请重新 /login"
+                )
+                self.reset_user_session()
+                self.user_client = TelegramClient(
+                    StringSession(""),
+                    int(config.user_api.api_id),
+                    config.user_api.api_hash,
+                    proxy=user_proxy,
+                    **TELETHON_KWARGS,
+                )
+                await self.user_client.connect()
 
             if await self.user_client.is_user_authorized():
                 logger.info("Telegram 用户客户端已连接")
@@ -101,14 +151,26 @@ class TelegramClientWrapper:
                 raise Exception("未配置 USER_API_ID 或 USER_API_HASH，请检查 .env 文件")
 
             proxy = get_proxy_dict(config.user_api.proxy or config.proxy)
-            self.user_client = TelegramClient(
-                StringSession(""),
-                int(config.user_api.api_id),
-                config.user_api.api_hash,
-                proxy=proxy,
-                **TELETHON_KWARGS,
-            )
-            await self.user_client.connect()
+            try:
+                self.user_client = TelegramClient(
+                    StringSession(""),
+                    int(config.user_api.api_id),
+                    config.user_api.api_hash,
+                    proxy=proxy,
+                    **TELETHON_KWARGS,
+                )
+                await self.user_client.connect()
+            except AuthKeyDuplicatedError:
+                logger.error("send_code: auth key 已失效，正在重置 session")
+                self.reset_user_session()
+                self.user_client = TelegramClient(
+                    StringSession(""),
+                    int(config.user_api.api_id),
+                    config.user_api.api_hash,
+                    proxy=proxy,
+                    **TELETHON_KWARGS,
+                )
+                await self.user_client.connect()
 
         self.phone = phone
         res = await self.user_client.send_code_request(phone)
