@@ -7,6 +7,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -17,6 +18,6 @@ jobs:
       - name: Lint
         run: ruff check core downloader telegram web tests
       - name: Test
-        run: pytest
+        run: pytest --timeout=60
         env:
           PYTHONPATH: ${{ github.workspace }}
