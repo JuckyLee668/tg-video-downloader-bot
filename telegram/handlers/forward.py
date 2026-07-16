@@ -1,5 +1,7 @@
 from downloader.manager import download_manager
 from telegram.client import tg_clients
+from telegram.handlers.action_prompt import handle_media_action
+from telegram.handlers.download import _build_source_data, _msg_to_info
 from telegram.handlers.utils import message_file_name, parse_indices
 from telegram.search_cache import search_cache
 from telegram.state_manager import state_manager
@@ -15,7 +17,6 @@ async def batch_forward_handler(event, arg=None):
     if not arg or arg.strip().lower() == 'all':
         indices_str = 'all'
     else:
-        # 校验是否有效的序号格式
         try:
             parse_indices(arg)
             indices_str = arg
@@ -23,6 +24,18 @@ async def batch_forward_handler(event, arg=None):
             await event.respond("📤 请输入序号范围（如 `1-5,8` 或 `all`）：")
             await state_manager.set(event.chat_id, {'command': 'bf', 'step': 'indices'})
             return
+
+    # 单文件 → 交互式选择
+    if indices_str != 'all':
+        indices = parse_indices(indices_str)
+        if len(indices) == 1 and last_results:
+            idx = list(indices)[0]
+            if 1 <= idx <= len(last_results):
+                msg = last_results[idx - 1]
+                info = _msg_to_info(msg)
+                info["source_data"] = _build_source_data(msg, event)
+                return await handle_media_action(event, info, source_type="telegram",
+                                                 source_data=info.pop("source_data", {}))
 
     await state_manager.set(event.chat_id, {
         'command': 'bf',
@@ -51,7 +64,7 @@ async def forward_link_handler(event, arg=None):
         await event.respond(f"❌ 获取失败: {e}")
 
 
-async def do_bf(event, target, indices_str=None, delete_after=False):
+async def do_bf(event, target, indices_str=None, delete_after=False, exclude_large=False):
     if not tg_clients.user_client or not await tg_clients.user_client.is_user_authorized():
         await event.respond("❌ 用户客户端未登录。")
         return
@@ -60,7 +73,7 @@ async def do_bf(event, target, indices_str=None, delete_after=False):
     try:
         await download_manager._resolve_forward_peer(tg_clients.user_client, target)
     except Exception as e:
-        await event.respond(f"❌ 目标无效: {e}\n请使用 @username 或聊天 ID（如 -1001234567890）")
+        await event.respond(f"❌ 目标无效: {e}\n请使用 @username、聊天 ID（如 -1001234567890）或频道/群组链接")
         return
 
     last_results = search_cache.get(event.chat_id)
@@ -86,8 +99,27 @@ async def do_bf(event, target, indices_str=None, delete_after=False):
     if large_files:
         me = await tg_clients.user_client.get_me()
         if not getattr(me, 'premium', False):
-            await event.respond(f"⚠️ 检测到 {len(large_files)} 个文件超过 2GB，非会员无法转发。")
-            return
+            if exclude_large:
+                messages_to_forward = [m for m in messages_to_forward if m not in large_files]
+                if not messages_to_forward:
+                    await event.respond("❌ 所有选中的文件均超过 2GB，且由于不是 Premium 会员，无法转发任何文件。")
+                    return
+            else:
+                await state_manager.set(event.chat_id, {
+                    'command': 'bf',
+                    'step': 'large_file_choice',
+                    'target': target,
+                    'indices': indices_str,
+                    'delete_after': delete_after
+                })
+                await event.respond(
+                    f"⚠️ 检测到 {len(large_files)} 个文件超过 2GB，非会员无法转发。\n\n"
+                    f"请选择处理方式：\n"
+                    f"1️⃣ - 排除大于 2GB 的文件，继续转发其余文件\n"
+                    f"2️⃣ - 取消整个转发任务\n\n"
+                    f"请回复数字 1 或 2 进行选择。"
+                )
+                return
 
     added = 0
     for msg in messages_to_forward:
@@ -115,4 +147,7 @@ async def do_bf(event, target, indices_str=None, delete_after=False):
         await download_manager.add_task(task)
         added += 1
 
-    await event.respond(f"📥 已添加 {added} 个转发任务到队列。")
+    if large_files and exclude_large:
+        await event.respond(f"📥 已排除 {len(large_files)} 个超过 2GB 的文件，其余 {added} 个转发任务已加入队列。")
+    else:
+        await event.respond(f"📥 已添加 {added} 个转发任务到队列。")

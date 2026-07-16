@@ -5,13 +5,16 @@ from telegram.client import tg_clients
 
 
 async def local_forward_handler(event, arg=None):
-    """配置下载后自动转发到本地聊天
+    """配置默认操作 — 收到视频时自动执行，跳过手动选择。
 
-    /lf            - 查看当前配置
-    /lf on         - 启用
-    /lf off        - 禁用
-    /lf set <id>   - 设置目标聊天 (chat_id 或 @username)
-    /lf delete     - 切换转发后删除本地文件
+    /autofwd                  — 查看当前配置
+    /autofwd on               — 启用默认操作
+    /autofwd off              — 禁用
+    /autofwd action download  — 默认: 下载到本地
+    /autofwd action forward   — 默认: 下载并转发
+    /autofwd action cloud     — 默认: 下载并上传云盘
+    /autofwd action all       — 默认: 全部
+    /autofwd target <id>      — 设置转发目标
     """
     if not arg:
         return await _show_status(event)
@@ -21,59 +24,76 @@ async def local_forward_handler(event, arg=None):
     param = parts[1] if len(parts) > 1 else ""
 
     if cmd == "on":
-        config.local_forward.enabled = True
+        config.default_action.enabled = True
         config.save()
-        logger.info("Local forward enabled")
-        await event.respond("✅ 已启用下载后自动转发。")
+        logger.info("Default action enabled")
+        await event.respond("✅ 已启用默认操作。收到视频时将自动按配置执行。")
 
     elif cmd == "off":
-        config.local_forward.enabled = False
+        config.default_action.enabled = False
         config.save()
-        logger.info("Local forward disabled")
-        await event.respond("⏸️ 已禁用下载后自动转发。")
+        logger.info("Default action disabled")
+        await event.respond("⏸️ 已禁用默认操作。收到视频时将询问操作。")
 
-    elif cmd == "set":
-        if not param:
-            await event.respond("❌ 用法：`/lf set <chat_id>` 或 `/lf set @username`")
+    elif cmd == "action":
+        actions = ("download", "forward", "cloud", "all")
+        if param not in actions:
+            await event.respond(
+                "❌ 用法：`/autofwd action <download|forward|cloud|all>`\n\n"
+                "• `download` — 仅下载到本地\n"
+                "• `forward` — 下载并转发\n"
+                "• `cloud` — 下载并上传云盘\n"
+                "• `all` — 全部执行"
+            )
             return
-        # 验证目标是否可达
+        config.default_action.action = param
+        config.save()
+        labels = {"download": "下载到本地", "forward": "下载并转发", "cloud": "下载并上传云盘", "all": "全部"}
+        await event.respond(f"✅ 默认操作已设为：{labels[param]}")
+
+        if param in ("forward", "all") and not config.default_action.target_chat:
+            await event.respond("⚠️ 尚未设置转发目标，请使用 `/autofwd target <id>` 设置。")
+
+    elif cmd == "target":
+        if not param:
+            await event.respond("❌ 用法：`/autofwd target <chat_id 或 @username>`")
+            return
+        # 验证目标可达
         if tg_clients.user_client and await tg_clients.user_client.is_user_authorized():
             try:
                 from downloader.manager import download_manager
                 await download_manager._resolve_forward_peer(tg_clients.user_client, param)
             except Exception as e:
                 await event.respond(f"⚠️ 目标暂无法解析，但仍会保存配置。\n错误: {e}")
-        config.local_forward.target_chat = param
+        config.default_action.target_chat = param
         config.save()
-        await event.respond(f"✅ 已设置转发目标: `{param}`")
-
-    elif cmd == "delete":
-        new_val = not config.local_forward.delete_after_forward
-        config.local_forward.delete_after_forward = new_val
-        config.save()
-        status = "✅ 转发后删除本地文件" if new_val else "⏸️ 转发后保留本地文件"
-        await event.respond(status)
+        await event.respond(f"✅ 转发目标已设为：`{param}`")
 
     else:
-        await event.respond("❌ 未知子命令。支持: `on`, `off`, `set <id>`, `delete`")
+        await event.respond(
+            "❌ 未知子命令。\n"
+            "用法：`/autofwd on|off|action|target`\n"
+            "发送 `/autofwd` 查看当前配置。"
+        )
 
 
 async def _show_status(event):
-    lf = config.local_forward
-    status = "🟢 已启用" if lf.enabled else "🔴 已禁用"
-    target = lf.target_chat or "未设置"
-    delete_str = "是" if lf.delete_after_forward else "否"
+    da = config.default_action
+    status = "🟢 已启用" if da.enabled else "🔴 已禁用"
+    labels = {"download": "下载到本地", "forward": "下载并转发", "cloud": "下载并上传云盘", "all": "全部"}
+    action_label = labels.get(da.action, da.action)
+    target = da.target_chat or "未设置"
+
     text = (
-        f"📤 **下载后自动转发**\n\n"
-        f"状态: {status}\n"
-        f"目标: `{target}`\n"
-        f"转发后删除: {delete_str}\n\n"
-        f"💡 用法:\n"
-        f"• `/lf on` — 启用\n"
-        f"• `/lf off` — 禁用\n"
-        f"• `/lf set <chat_id>` — 设置目标\n"
-        f"• `/lf set @username` — 设置目标\n"
-        f"• `/lf delete` — 切换删除开关\n"
-        f"• `/lf` — 查看状态"
+        f"⚙️ **默认操作配置**\n\n"
+        f"状态：{status}\n"
+        f"操作：{action_label}\n"
+        f"转发目标：`{target}`\n\n"
+        f"💡 启用后收到任何视频都将自动执行，不再询问。\n\n"
+        f"用法：\n"
+        f"• `/autofwd on` — 启用\n"
+        f"• `/autofwd off` — 禁用\n"
+        f"• `/autofwd action <download|forward|cloud|all>` — 设置操作\n"
+        f"• `/autofwd target <id>` — 设置转发目标\n"
     )
     await event.respond(text)

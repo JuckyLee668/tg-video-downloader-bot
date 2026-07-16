@@ -1,20 +1,23 @@
 # Telegram Media Downloader Bot
 
-基于 **Telethon + FastAPI + SQLite** 的 Telegram 媒体下载与转发工具。提供 Telegram Bot 命令和 Web 控制台，支持频道连接、关键词搜索、时间范围搜索、批量下载、批量转发、自动上传阿里云盘、本地文件管理和代理配置。
+基于 **Telethon + FastAPI + SQLite** 的 Telegram 媒体下载与转发工具。支持 Telegram 频道搜索下载、Twitter/X 视频下载、批量转发、阿里云盘上传、本地文件管理和代理配置。
 
 ## 功能
 
-- **Telegram Bot 控制**：私聊 Bot 即可登录用户客户端、连接频道、搜索、下载和转发。
+- **Telegram Bot 控制**：私聊 Bot 即可登录、连接频道、搜索、下载和转发。
+- **Twitter/X 视频下载**：直接发送链接或 `/tw` 命令，自动解析并下载视频。
+- **统一交互选项**：收到任何视频均可选择：仅下载 / 转发到频道 / 上传云盘 / 全部。
+- **默认操作**：配置 `/autofwd` 后，收到视频自动执行预设操作，无需手动选择。
 - **Web 控制台**：默认监听 `127.0.0.1:8000`，可查看队列、历史、频道、本地文件和登录状态。
 - **批量任务队列**：下载任务落 SQLite，worker 通过数据库原子领取任务，避免重复处理。
 - **文件去重**：按 chat_id + message_id 自动去重，同一文件不会重复下载。
 - **智能重命名**：支持 `{channel_title}/{date}_{original_name}` 等变量，可按频道/日期自动分目录。
 - **进度推送**：大文件下载时 Bot 实时推送进度百分比。
 - **频道自动监控**：定时扫描已连接频道，匹配关键词/媒体类型，自动创建下载任务。
-- **缩略图预览**：搜索结果中为视频和图片生成缩略图，支持 Web 端异步加载。
+- **流媒体转发**：转发的视频保留原始分辨率、时长和流式播放能力。
+- **回复转发**：支持将文件作为对目标消息的回复发送。
 - **下载安全**：保存文件名前做路径净化，避免非法文件名和路径穿越。
 - **搜索优化**：多频道搜索使用有限并发，兼顾速度和 Telegram 限流风险。
-- **自动转发**：下载完成后自动转发到指定聊天（如 Saved Messages）。
 - **阿里云盘上传**：下载完成后自动上传到阿里云盘指定目录。
 - **状态持久化**：交互状态和任务进度持久化到 SQLite，重启不丢失。
 - **Web API 安全**：生产环境强制设置 `WEB_API_KEY`；API key 使用常量时间比较，连续失败会临时锁定。
@@ -30,43 +33,46 @@ core/                  配置、数据库、路径安全工具
 
 downloader/            下载引擎和任务管理器
   engine.py            下载引擎 (Telethon download_media)
-  manager.py           任务管理器 (worker 池、下载、转发、自动上传)
+  external.py          外部视频下载 (yt-dlp: Twitter/X)
+  manager.py           任务管理器 (worker 池、下载、转发、上传)
   aliyundrive_uploader.py  阿里云盘自动上传模块
 
 telegram/              Telethon 客户端、路由、命令和频道搜索
   client.py            Telegram 客户端 (Bot + User)
-  router.py            统一命令路由 + FSM 状态机 + 媒体自动入库
+  router.py            统一命令路由 + URL 自动识别 + FSM 状态机
   search.py            多频道异步搜索 (关键词/时间/最新)
   search_cache.py      搜索结果缓存
   state_manager.py     FSM 交互状态持久化
   limiter.py           消息频率限制
   auto_watch.py        频道自动监控管理器
   handlers/
-    auth.py            登录相关命令
-    channel.py         频道连接/列表 (旧)
-    download.py        批量下载、队列、取消 (旧)
-    forward.py         批量转发、链接转发 (旧)
-    search.py          频道搜索命令 (旧)
-    cmd_channel.py     合并后的频道管理命令路由
-    cmd_download.py    合并后的下载命令路由
-    cmd_forward.py     合并后的转发命令路由
-    cmd_search.py      合并后的搜索命令路由
-    cmd_aliyun.py      阿里云盘管理 (/aliyun 命令 + 自动安装 CLI)
-    storage.py         本地文件管理命令
-    system.py          帮助/状态命令
+    auth.py            登录 / 登录状态
+    channel.py         频道连接 / 列表
+    download.py        批量下载、队列、取消
+    forward.py         批量转发、链接转发
+    search.py          频道搜索
+    cmd_channel.py     频道管理命令路由
+    cmd_download.py    下载命令路由
+    cmd_forward.py     转发命令路由
+    cmd_search.py      搜索命令路由
+    cmd_x.py           Twitter / X 视频下载 (/tw)
+    cmd_aliyun.py      阿里云盘管理 (/aliyun)
+    action_prompt.py   统一视频操作交互 (所有来源共用)
+    storage.py         本地文件管理
+    system.py          帮助 / 状态
     thumbnail.py       缩略图生成 (视频/图片)
-    local_forward.py   下载后自动转发配置
-    watch_handler.py   频道自动监控配置命令
+    local_forward.py   默认操作配置 (/autofwd)
+    watch_handler.py   频道自动监控配置
     utils.py           公用工具 (索引解析、格式化、文件名提取、文件信息)
 
 web/                   FastAPI 应用、API 路由和请求模型
   server.py            FastAPI 应用创建
-  routes.py            API 路由 (搜索、下载、转发、登录、文件管理)
+  routes.py            API 路由
   api_models.py        Pydantic 请求模型
 
 public/                Web 静态页面
 tests/                 pytest 测试
-data/                  SQLite 数据库目录
+data/                  SQLite 数据库、cookies 文件
 ```
 
 ## 环境要求
@@ -75,6 +81,7 @@ data/                  SQLite 数据库目录
 - 可访问 Telegram 的网络环境
 - Bot Token
 - Telegram API ID / API Hash
+- (可选) ffmpeg — Twitter 视频合并需要，系统一般自带
 
 ## 快速开始
 
@@ -123,36 +130,6 @@ Windows PowerShell：
 
 ```powershell
 .\start.ps1
-```
-
-脚本支持只检查环境而不启动服务：
-
-```bash
-./start.sh --check
-```
-
-```powershell
-.\start.ps1 -Check
-```
-
-跳过依赖安装：
-
-```bash
-./start.sh --skip-install
-```
-
-```powershell
-.\start.ps1 -SkipInstall
-```
-
-临时覆盖 Web 监听地址和端口：
-
-```bash
-./start.sh --host 127.0.0.1 --port 8001
-```
-
-```powershell
-.\start.ps1 -HostOverride 127.0.0.1 -PortOverride 8001
 ```
 
 启动后访问：
@@ -209,6 +186,30 @@ allowed_user_ids:
 
 也可以指定 Telegram 用户 ID 或用户名。
 
+### 默认操作 (自动模式)
+
+```yaml
+default_action:
+  enabled: false
+  action: download        # download / forward / cloud / all
+  target_chat: ""         # 转发目标 (forward/all 时使用)
+  delete_after_forward: false
+```
+
+启用后收到任何视频都会自动按配置执行，不再询问。通过 `/autofwd` 命令在线配置。
+
+### Twitter / X 视频下载
+
+**配置登录**：在浏览器中登录 x.com，F12 → Application → Cookies → x.com，找到 `auth_token` 和 `ct0`，发送给 Bot：
+
+```
+auth_token <auth_token值> <ct0值>
+```
+
+Bot 会自动保存为 `data/twitter_cookies.txt` 并用于所有 Twitter 下载。登录状态可在 `/login` 中查看。
+
+之后直接发送 Twitter/X 链接即可自动识别并下载，或使用 `/tw <url>`。
+
 ### 阿里云盘自动上传
 
 ```yaml
@@ -228,7 +229,7 @@ aliyundrive_upload:
 | Windows x64/x86/arm64 | `aliyunpan-v*-windows-*.zip` | PATH 可写目录 |
 | macOS amd64/arm64 | `aliyunpan-v*-darwin-*.zip` | `/usr/local/bin/aliyunpan` |
 
-### 下载后自动转发
+### 下载后自动转发（旧配置）
 
 ```yaml
 local_forward:
@@ -237,7 +238,7 @@ local_forward:
   delete_after_forward: false
 ```
 
-下载完成后自动把文件转发到指定聊天（如 Saved Messages、群组）。可通过 Bot 命令 `/lf` 在线配置。
+下载完成后自动把文件转发到指定聊天。建议改用新的 `default_action` 配置，配合 `/autofwd` 使用，适用范围更广。
 
 ### 文件去重
 
@@ -245,7 +246,7 @@ local_forward:
 file_dedup:
   enabled: true
   by_message_id: true   # 按 chat_id + message_id 去重
-  by_file_id: false     # 按 Telegram file_id 去重（更严格）
+  by_file_id: false     # 按 Telegram file_id 去重
 ```
 
 下载前自动检查是否已下载过，避免重复下载和存储。
@@ -262,16 +263,12 @@ file_rename:
 
 | 变量 | 说明 | 示例 |
 |------|------|------|
-| `{channel_title}` | 频道标题 | `MyChannel` |
+| `{channel_title}` | 频道标题 / 作者 | `MyChannel` |
 | `{channel_username}` | 频道用户名 | `@mychannel` |
-| `{date}` | 消息日期 | `2024_01` |
-| `{time}` | 消息时间 | `15_30_00` |
+| `{date}` | 日期 | `2024_01` |
+| `{time}` | 时间 | `15_30_00` |
 | `{original_name}` | 原始文件名（不含扩展名） | `video` |
 | `{ext}` | 文件扩展名（含点号） | `.mp4` |
-
-> **注意**：即使 pattern 中未包含 `{ext}`，系统也会自动追加扩展名，确保文件不会丢失后缀。默认 pattern 为 `{channel_title}/{date}_{original_name}{ext}`。
-
-支持子目录（在 pattern 中使用 `/`）。
 
 ### 进度推送
 
@@ -300,19 +297,6 @@ APP_ENV=production
 WEB_HOST=0.0.0.0
 ```
 
-生产环境下，如果 `APP_ENV=production` 但没有设置 `WEB_API_KEY`，API 会拒绝服务。
-
-### CORS
-
-默认只允许本地控制台来源：
-
-```yaml
-web_cors_origins:
-  - http://127.0.0.1:8000
-```
-
-如需反向代理或自定义域名，显式添加对应来源。
-
 ### 代理
 
 ```yaml
@@ -334,24 +318,44 @@ user_api:
 | 命令 | 作用 | 子命令 |
 | --- | --- | --- |
 | `/start` | 查看帮助 | — |
-| `/help` | 完整命令菜单 | — |
-| `/status` 或 `/s` | 系统和任务状态 | — |
-| `/auth` | 查看登录状态 | — |
-| `/login` | 登录用户客户端 | — |
-| `/channel` | 频道管理 | `connect @xx`、`list` |
+| `/help` `/h` | 完整命令菜单 | — |
+| `/status` `/s` | 系统和任务状态 | — |
+| `/login` | 登录状态 / 登录账号 | 无参显示状态，有参开始登录 |
+| `/channel` | 频道管理 | `connect @xx`、`list`。回复链接可直接添加 |
 | `/search` | 搜索频道媒体 | `keyword xx`、`recent [n]`、`time <开始> <结束>`、`history` |
-| `/download` | 批量下载 | `[序号]`、`format <格式> [序号]` |
-| `/forward` | 批量转发 | `[序号]`、`to @目标 [序号]`、`link <url>` |
+| `/download` | 批量下载 | `[序号]`、`format <格式> [序号]`。单选弹出交互选项 |
+| `/forward` | 批量转发 | `[序号]`、`to @目标 [序号]`、`link <url>`。单选弹出交互选项 |
+| `/tw` | Twitter/X 视频下载 | 直接发链接也可自动识别 |
+| `/dl` | 下载队列 | — |
+| `/cancel` `/c` | 取消操作 | — |
+| `/clear` `/cl` | 清理下载队列 | — |
+| `/files` `/f` | 本地文件管理 | `del <序号>`、`clear`、`thumbs` |
 | `/aliyun` | 阿里云盘管理 | `login`、`logout`、`ls`、`tree`、`on`、`off`、`path` |
+| `/autofwd` | 默认操作配置 | `on`、`off`、`action <类型>`、`target <id>` |
 | `/push` | 下载进度推送 | `on`、`off` |
 | `/rename` | 智能重命名 | `set <pattern>`、`on`、`off` |
-| `/dl` | 查看下载队列 | — |
-| `/sh` | 搜索下载历史 | — |
-| `/cancel` 或 `/c` | 取消操作 | — |
-| `/clear` 或 `/cl` | 清理缓存 | — |
-| `/files` 或 `/f` | 本地文件管理 | — |
-| `/lf` | 自动转发配置 | `on`、`off`、`set <id>` |
 | `/watch` | 频道自动监控 | `add`、`remove`、`on`、`off` |
+
+### 旧命令别名（仍可使用）
+
+| 别名 | 等价于 |
+|------|--------|
+| `/bf` | `/forward` |
+| `/bd` | `/download` |
+| `/bdf` | `/download format` |
+
+### 默认操作命令
+
+| 命令 | 说明 |
+|------|------|
+| `/autofwd` | 查看当前配置 |
+| `/autofwd on` | 启用 — 收到视频自动执行 |
+| `/autofwd off` | 禁用 — 收到视频询问操作 |
+| `/autofwd action download` | 默认：下载到本地 |
+| `/autofwd action forward` | 默认：下载并转发 |
+| `/autofwd action cloud` | 默认：下载并上传云盘 |
+| `/autofwd action all` | 默认：全部执行 |
+| `/autofwd target @xxx` | 设置转发目标 |
 
 ### 频道自动监控命令
 
@@ -363,11 +367,7 @@ user_api:
 | `/watch on <id>` | 启用规则 |
 | `/watch off <id>` | 禁用规则 |
 
-监控规则会每 5 分钟自动扫描频道新消息，匹配规则后自动创建下载任务。关键词不区分大小写，留空则监控全部媒体。
-
 ### 本地文件管理
-
-`/files` 命令支持以下子命令：
 
 - `/files` — 查看下载文件列表
 - `/files thumbs` — 查看缩略图缓存状态
@@ -420,8 +420,6 @@ data/telegram_downloader.db
 pending/failed -> downloading -> completed/history
 ```
 
-交互状态（FSM）和频道监控状态也会持久化到同一数据库，重启后自动恢复。
-
 ## Docker
 
 构建镜像：
@@ -459,22 +457,17 @@ ruff check core downloader telegram web tests
 
 ### 测试覆盖
 
-测试覆盖以下核心模块（168 个测试用例）：
-
 | 模块 | 文件 | 覆盖内容 |
 |------|------|----------|
 | `core/paths.py` | `test_paths.py` | 文件名净化、路径穿越防护 |
 | `core/database.py` | `test_database.py` | 任务原子领取、完成归档 |
-| `core/config.py` | `test_config.py` | YAML/环境变量加载、配置默认值、本地覆写、持久化 |
-| `web/api_models.py` | `test_api_models.py` | 搜索/下载/转发/代理/登录模型约束验证 |
-| `telegram/handlers/utils.py` | `test_utils.py` | 序号解析、文件大小格式化、时间格式化、文件名提取 |
-| `telegram/handlers/utils.py` | `test_utils_misc.py` | `message_file_info` 多类型文件信息提取 |
-| `telegram/handlers/cmd_aliyun.py` | `test_cmd_aliyun.py` | 命令路由、状态显示、自动安装、跨平台检测 |
-| `telegram/handlers/cmd_aliyun.py` | `test_aliyun_platform.py` | 多 OS/CPU 架构资产识别、安装路径 |
-| `telegram/search_cache.py` | `test_search_cache.py` | TTL 过期、容量上限、增删查 |
-| `telegram/limiter.py` | `test_limiter.py` | 每秒/每分钟限速、并发安全、历史过期 |
+| `core/config.py` | `test_config.py` | YAML/环境变量加载、配置默认值 |
+| `web/api_models.py` | `test_api_models.py` | 搜索/下载/转发/代理/登录模型验证 |
+| `telegram/handlers/utils.py` | `test_utils.py` | 序号解析、格式化、文件名提取 |
+| `telegram/search_cache.py` | `test_search_cache.py` | TTL 过期、容量上限 |
 | `telegram/state_manager.py` | `test_state_manager.py` | FSM 状态读写、隔离、清除 |
-| `telegram/auto_watch.py` | `test_watch_manager.py` | 媒体文件信息提取（视频/图片/音频/文档等） |
+| `downloader/manager.py` | `test_resolve_forward_peer.py` | 转发目标解析（含消息 ID） |
+| `downloader/external.py` | `test_external_downloader.py` | Twitter URL 检测、信息提取 |
 
 ## CI
 
@@ -494,17 +487,7 @@ CI 会执行：
 
 ### Web 页面打不开
 
-确认程序正在运行，并监听：
-
-```text
-127.0.0.1:8000
-```
-
-如果端口被占用，可以设置：
-
-```env
-WEB_PORT=8001
-```
+确认程序正在运行，并监听 `127.0.0.1:8000`。如果端口被占用，设置 `WEB_PORT=8001`。
 
 ### 无法连接 Telegram
 
@@ -512,28 +495,18 @@ WEB_PORT=8001
 
 ### 登录失败
 
-检查 `.env` 中的：
+检查 `.env` 中的 `USER_API_ID` 和 `USER_API_HASH`，然后在 Bot 私聊中执行 `/login`。
 
-```env
-USER_API_ID=
-USER_API_HASH=
-```
+### Twitter 视频下载失败
 
-然后在 Bot 私聊中执行 `/login`。
-
-### Web API 返回 WEB_API_KEY missing
-
-说明当前已设置 `WEB_API_KEY`，调用 API 时需要带请求头：
-
-```text
-X-API-Key: your_strong_random_key
-```
+1. 确认 cookies 有效：`/login` 查看 "Twitter Cookies" 状态
+2. 重新获取 cookies：浏览器 x.com → F12 → Application → Cookies → `auth_token` + `ct0` → 发送 `auth_token <值1> <值2>` 给 Bot
+3. confirm ffmpeg 已安装：`ffmpeg -version`
 
 ### 搜索结果没有缩略图
 
-搜索 Bot 命令自动为前 15-20 条视频/图片生成缩略图。如果没有显示：
-- 确保用户客户端已登录（`/auth` 查看）
-- 视频没有内置缩略图时会跳过（下载整个视频抽帧开销太大）
+- 确保用户客户端已登录（`/login` 查看）
+- 视频没有内置缩略图时会跳过
 - Web 页面需要等待异步生成完成
 
 ### 公开部署注意事项

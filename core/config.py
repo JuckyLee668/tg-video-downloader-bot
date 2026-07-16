@@ -34,10 +34,18 @@ class AliyunDriveUploadConfig(BaseModel):
     delete_after_upload: bool = False
 
 
-class LocalForwardConfig(BaseModel):
-    """下载后自动转发到指定聊天"""
+class DefaultActionConfig(BaseModel):
+    """默认操作：收到任何视频时自动执行，跳过交互询问"""
     enabled: bool = False
-    target_chat: str = ""  # chat_id 或 @username
+    action: str = "download"  # download / forward / cloud / all
+    target_chat: str = ""     # 转发目标 (forward/all 时使用)
+    delete_after_forward: bool = False
+
+
+class LocalForwardConfig(BaseModel):
+    """下载后自动转发到指定聊天（兼容旧配置）"""
+    enabled: bool = False
+    target_chat: str = ""
     delete_after_forward: bool = False
 
 
@@ -80,6 +88,7 @@ class Config(BaseModel):
     web_cors_origins: List[str] = Field(default_factory=lambda: ["http://127.0.0.1:8000"])
     environment: str = Field(default="local")
     aliyundrive_upload: AliyunDriveUploadConfig = Field(default_factory=AliyunDriveUploadConfig)
+    default_action: DefaultActionConfig = Field(default_factory=DefaultActionConfig)
     local_forward: LocalForwardConfig = Field(default_factory=LocalForwardConfig)
     file_rename: FileRenameConfig = Field(default_factory=FileRenameConfig)
     file_dedup: FileDedupConfig = Field(default_factory=FileDedupConfig)

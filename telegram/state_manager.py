@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
 import aiosqlite
@@ -16,19 +17,26 @@ class StateManager:
         self.ttl = ttl
         self.db_path = db_path
         self._cache: Dict[int, Dict[str, Any]] = {}
+        self._initialized = False
 
+    @asynccontextmanager
     async def _get_db(self):
         db = await aiosqlite.connect(self.db_path)
         await db.execute("PRAGMA busy_timeout = 5000")
-        await db.execute("""\
-            CREATE TABLE IF NOT EXISTS user_states (
-                chat_id INTEGER PRIMARY KEY,
-                state_json TEXT NOT NULL,
-                updated_at REAL NOT NULL
-            )
-        """)
-        await db.commit()
-        return db
+        if not self._initialized:
+            await db.execute("""\
+                CREATE TABLE IF NOT EXISTS user_states (
+                    chat_id INTEGER PRIMARY KEY,
+                    state_json TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+            """)
+            await db.commit()
+            self._initialized = True
+        try:
+            yield db
+        finally:
+            await db.close()
 
     async def set(self, chat_id: int, state: Dict[str, Any]):
         self._cache[chat_id] = {"data": dict(state), "timestamp": time.time()}
@@ -36,7 +44,7 @@ class StateManager:
 
     async def _persist(self, chat_id: int, state: Dict[str, Any]):
         try:
-            async with await self._get_db() as db:
+            async with self._get_db() as db:
                 await db.execute(
                     "INSERT OR REPLACE INTO user_states (chat_id, state_json, updated_at) VALUES (?, ?, ?)",
                     (chat_id, json.dumps(state, ensure_ascii=False), time.time()),
@@ -61,7 +69,7 @@ class StateManager:
 
     async def _load_from_db(self, chat_id: int) -> Optional[Dict[str, Any]]:
         try:
-            async with await self._get_db() as db:
+            async with self._get_db() as db:
                 db.row_factory = aiosqlite.Row
                 cursor = await db.execute(
                     "SELECT state_json, updated_at FROM user_states WHERE chat_id = ?",
@@ -92,7 +100,7 @@ class StateManager:
 
     async def _clear_db(self, chat_id: int):
         try:
-            async with await self._get_db() as db:
+            async with self._get_db() as db:
                 await db.execute("DELETE FROM user_states WHERE chat_id = ?", (chat_id,))
                 await db.commit()
         except Exception as e:

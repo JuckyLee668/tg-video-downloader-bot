@@ -6,13 +6,14 @@ from pathlib import Path
 from typing import Any, Dict
 
 from loguru import logger
-from telethon.tl.types import InputPeerChannel
+from telethon.tl.types import DocumentAttributeVideo, InputPeerChannel
 
 from core.config import config
 from core.database import db_manager
 from core.paths import safe_join_download_path
 from downloader.aliyundrive_uploader import aliyundrive_uploader
 from downloader.engine import download_engine
+from downloader.external import external_downloader
 
 
 class DownloadManager:
@@ -23,6 +24,7 @@ class DownloadManager:
         self.max_concurrent = max(1, int(config.max_download_task))
         self.forward_peer_cache: dict[str, Any] = {}
         self._progress_msg_ids: dict[str, list[int]] = {}
+        self._video_attrs_cache: dict[str, dict] = {}
 
     async def init(self):
         pending_tasks = await db_manager.get_pending_tasks()
@@ -44,12 +46,16 @@ class DownloadManager:
 
             if config.file_dedup.by_message_id and chat_id and message_id:
                 if await db_manager.is_already_downloaded(str(chat_id), str(message_id)):
-                    logger.info(f"Dedup skipped (by_message_id): chat={chat_id}, msg={message_id}, file={task.get('file_name')}")
+                    logger.info(
+                        f"Dedup skipped (by_message_id): chat={chat_id}, msg={message_id}, file={task.get('file_name')}"
+                    )
                     return None
 
             if config.file_dedup.by_file_id and file_id:
                 if await db_manager.is_file_downloaded(str(file_id)):
-                    logger.info(f"Dedup skipped (by_file_id): file_id={file_id}, file={task.get('file_name')}")
+                    logger.info(
+                        f"Dedup skipped (by_file_id): file_id={file_id}, file={task.get('file_name')}"
+                    )
                     return None
 
         task_id = await db_manager.add_download_task(task)
@@ -87,56 +93,103 @@ class DownloadManager:
 
         try:
             logger.info(f"Worker {worker_id} started task {task_id}: {task.get('file_name')}")
-            save_path = safe_join_download_path(config.save_path, task.get("file_name", "download.bin"))
+            save_path = safe_join_download_path(
+                config.save_path, task.get("file_name", "download.bin")
+            )
             save_path.parent.mkdir(parents=True, exist_ok=True)
 
-            download_client, message_obj = await self._resolve_message(tg_clients, task, task_data)
-            if not download_client or not message_obj:
-                raise RuntimeError("No Telegram client could access this media message")
+            is_external = task_data.get("source_type") == "external"
 
             # ── Progress notification setup ──────────────────────────────
             progress_msg_ref = None
-            if config.progress_notification and tg_clients.bot_client:
-                requester_id = self._telegram_chat_id_or_none(
-                    task_data.get("requester_chat_id") or task.get("chat_id")
-                )
-                if requester_id:
-                    try:
-                        msg = await tg_clients.bot_client.send_message(
-                            requester_id,
-                            f"⏳ Downloading `{task.get('file_name')}` — 0%",
-                        )
-                        self._progress_msg_ids[task_id] = [msg.id]
-                        progress_msg_ref = self._progress_msg_ids[task_id]
-                    except Exception as e:
-                        logger.debug(f"Failed to send initial progress message: {e}")
-
-            actual_path = await self._download_if_needed(
-                download_client, message_obj, save_path, task,
-                bot_client=tg_clients.bot_client if config.progress_notification else None,
-                requester_chat_id=requester_id if config.progress_notification and progress_msg_ref else None,
-                progress_msg_ref=progress_msg_ref,
+            requester_id = self._telegram_chat_id_or_none(
+                task_data.get("requester_chat_id") or task.get("chat_id")
             )
+            if (
+                config.progress_notification
+                and tg_clients.bot_client
+                and requester_id
+                and not self._is_channel_or_group(requester_id)
+            ):
+                try:
+                    msg = await tg_clients.bot_client.send_message(
+                        requester_id,
+                        f"⏳ Downloading `{task.get('file_name')}` — 0%",
+                    )
+                    self._progress_msg_ids[task_id] = [msg.id]
+                    progress_msg_ref = self._progress_msg_ids[task_id]
+                except Exception as e:
+                    logger.debug(f"Failed to send initial progress message: {e}")
+
+            if is_external:
+                # ── External source (yt-dlp) ────────────────────────────
+                actual_path = await self._download_external(
+                    task, task_data, save_path,
+                    bot_client=tg_clients.bot_client if config.progress_notification else None,
+                    requester_chat_id=requester_id
+                    if config.progress_notification and progress_msg_ref
+                    else None,
+                    progress_msg_ref=progress_msg_ref,
+                )
+            else:
+                # ── Telegram source ─────────────────────────────────────
+                download_client, message_obj = await self._resolve_message(
+                    tg_clients, task, task_data
+                )
+                if not download_client or not message_obj:
+                    raise RuntimeError("No Telegram client could access this media message")
+
+                # Cache video attributes for streaming re-upload
+                video_attrs = self._extract_video_attributes(message_obj)
+                if video_attrs["attributes"]:
+                    self._video_attrs_cache[task_id] = video_attrs
+
+                actual_path = await self._download_if_needed(
+                    download_client,
+                    message_obj,
+                    save_path,
+                    task,
+                    bot_client=tg_clients.bot_client if config.progress_notification else None,
+                    requester_chat_id=requester_id
+                    if config.progress_notification and progress_msg_ref
+                    else None,
+                    progress_msg_ref=progress_msg_ref,
+                )
+
+            # ── Shared post-download pipeline ───────────────────────────
             await self._forward_if_requested(tg_clients, actual_path, task, task_data)
 
-            # 自动上传到阿里云盘
-            if config.aliyundrive_upload.enabled:
+            # 外部任务根据 action 决定是否上传云盘
+            cloud_enabled = config.aliyundrive_upload.enabled
+            local_enabled = config.local_forward.enabled and bool(config.local_forward.target_chat)
+            if is_external:
+                action = task_data.get("action", "download")
+                cloud_enabled = action in ("cloud", "all")
+                local_enabled = False  # 外部任务不使用 local_forward 配置
+
+            if cloud_enabled:
                 aliyundrive_uploader.enabled = True
                 aliyundrive_uploader.remote_path = config.aliyundrive_upload.remote_path
-                aliyundrive_uploader.delete_after_upload = config.aliyundrive_upload.delete_after_upload
+                aliyundrive_uploader.delete_after_upload = (
+                    config.aliyundrive_upload.delete_after_upload
+                )
                 upload_ok = await aliyundrive_uploader.upload(actual_path)
                 if not upload_ok:
-                    logger.warning(f"AliyunDrive upload failed for task {task_id}, but download succeeded")
+                    logger.warning(
+                        f"AliyunDrive upload failed for task {task_id}, but download succeeded"
+                    )
 
-            # 自动转发到本地聊天
-            if config.local_forward.enabled and config.local_forward.target_chat:
+            if local_enabled:
                 await self._auto_forward_to_local(tg_clients, actual_path, task)
 
             delete_after = bool(task_data.get("delete_after_forward", False))
-            await db_manager.complete_download_task(task, {
-                "download_path": "" if delete_after else str(actual_path),
-                "status": "completed",
-            })
+            await db_manager.complete_download_task(
+                task,
+                {
+                    "download_path": "" if delete_after else str(actual_path),
+                    "status": "completed",
+                },
+            )
             await self._notify_success(tg_clients, task, task_data)
 
         except FloodWaitError as e:
@@ -145,17 +198,24 @@ class DownloadManager:
             await db_manager.requeue_task(task_id, f"Flood wait {wait_seconds}s")
             asyncio.create_task(self._wake_after(wait_seconds + 1))
         except Exception as e:
-            wait_seconds = self._parse_flood_wait_seconds(str(e))
-            if wait_seconds:
-                logger.warning(f"Flood wait text for task {task_id}: {wait_seconds}s")
-                await db_manager.requeue_task(task_id, f"Flood wait {wait_seconds}s")
-                asyncio.create_task(self._wake_after(wait_seconds + 1))
-            else:
-                logger.error(f"Task failed: {task_id}, error: {e}")
+            # 外部下载的永久错误不重试
+            if is_external and ("文件为空" in str(e) or "无法提取" in str(e)):
+                logger.error(f"External task failed permanently: {task_id}, error: {e}")
                 await db_manager.update_task_status(task_id, "failed", str(e))
                 await self._notify_failure(tg_clients, task, task_data, e)
+            else:
+                wait_seconds = self._parse_flood_wait_seconds(str(e))
+                if wait_seconds:
+                    logger.warning(f"Flood wait text for task {task_id}: {wait_seconds}s")
+                    await db_manager.requeue_task(task_id, f"Flood wait {wait_seconds}s")
+                    asyncio.create_task(self._wake_after(wait_seconds + 1))
+                else:
+                    logger.error(f"Task failed: {task_id}, error: {e}")
+                    await db_manager.update_task_status(task_id, "failed", str(e))
+                    await self._notify_failure(tg_clients, task, task_data, e)
         finally:
             self.active_tasks.discard(task_id)
+            self._video_attrs_cache.pop(task_id, None)
 
     async def _resolve_message(self, tg_clients, task: Dict[str, Any], task_data: Dict[str, Any]):
         download_client = None
@@ -175,7 +235,9 @@ class DownloadManager:
                 if not entity:
                     entity = await tg_clients.user_client.get_input_entity(int(peer_id_str))
 
-                messages = await tg_clients.user_client.get_messages(entity, ids=[int(task["message_id"])])
+                messages = await tg_clients.user_client.get_messages(
+                    entity, ids=[int(task["message_id"])]
+                )
                 if messages and messages[0] and messages[0].media:
                     download_client = tg_clients.user_client
                     message_obj = messages[0]
@@ -199,8 +261,14 @@ class DownloadManager:
         return download_client, message_obj
 
     async def _download_if_needed(
-        self, client, message, save_path: Path, task: Dict[str, Any],
-        bot_client=None, requester_chat_id=None, progress_msg_ref=None,
+        self,
+        client,
+        message,
+        save_path: Path,
+        task: Dict[str, Any],
+        bot_client=None,
+        requester_chat_id=None,
+        progress_msg_ref=None,
     ) -> Path:
         expected_size = int(task.get("file_size") or 0)
         if save_path.exists() and expected_size > 0 and save_path.stat().st_size == expected_size:
@@ -212,8 +280,11 @@ class DownloadManager:
             message,
             str(save_path),
             self.create_progress_callback(
-                task["task_id"], task.get("file_name", ""),
-                bot_client, requester_chat_id, progress_msg_ref,
+                task["task_id"],
+                task.get("file_name", ""),
+                bot_client,
+                requester_chat_id,
+                progress_msg_ref,
             ),
         )
         if actual_path is None:
@@ -298,6 +369,106 @@ class DownloadManager:
 
         return new_path
 
+    async def _download_external(
+        self,
+        task: Dict[str, Any],
+        task_data: Dict[str, Any],
+        save_path: Path,
+        bot_client=None,
+        requester_chat_id=None,
+        progress_msg_ref=None,
+    ) -> Path:
+        """Download from external source (Twitter/X etc.) via yt-dlp."""
+        url = task_data.get("source_url", "")
+        if not url:
+            raise RuntimeError("External task missing source_url")
+
+        progress_callback = self.create_progress_callback(
+            task["task_id"],
+            task.get("file_name", ""),
+            bot_client,
+            requester_chat_id,
+            progress_msg_ref,
+        )
+
+        actual_path_str = await external_downloader.download(
+            url, str(save_path), progress_callback=progress_callback
+        )
+        actual_path = Path(actual_path_str)
+
+        # Smart rename if configured
+        if config.file_rename.enabled and actual_path.exists():
+            actual_path = await self._smart_rename_external(actual_path, task_data)
+
+        # Build video attributes from yt-dlp info for streaming re-upload
+        ext_info = task_data.get("external_info", {})
+        if ext_info.get("width") and ext_info.get("height"):
+            from telethon.tl.types import DocumentAttributeVideo
+
+            video_attrs = {
+                "supports_streaming": True,
+                "attributes": [
+                    DocumentAttributeVideo(
+                        duration=float(ext_info.get("duration", 0) or 0),
+                        w=int(ext_info.get("width", 0) or 0),
+                        h=int(ext_info.get("height", 0) or 0),
+                        supports_streaming=True,
+                    )
+                ],
+                "nosound": False,
+            }
+            self._video_attrs_cache[task["task_id"]] = video_attrs
+
+        return actual_path
+
+    async def _smart_rename_external(self, file_path: Path, task_data: Dict[str, Any]) -> Path:
+        """Smart rename for external downloads using info from yt-dlp."""
+        import datetime
+
+        now = datetime.datetime.now()
+        date_str = now.strftime("%Y-%m-%d")
+        time_str = now.strftime("%H%M%S")
+
+        ext_info = task_data.get("external_info", {})
+        uploader = ext_info.get("uploader", "") or ""
+
+        ext = file_path.suffix
+        original_name = file_path.stem
+
+        pattern = config.file_rename.pattern
+        replacements = {
+            "{channel_title}": uploader,
+            "{channel_username}": uploader,
+            "{date}": date_str,
+            "{time}": time_str,
+            "{original_name}": original_name,
+            "{ext}": ext,
+        }
+
+        new_name = pattern
+        for placeholder, value in replacements.items():
+            new_name = new_name.replace(placeholder, value)
+
+        if ext and not new_name.endswith(ext):
+            new_name += ext
+
+        new_path = file_path.parent / new_name
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if new_path != file_path:
+            if new_path.exists():
+                counter = 1
+                stem = Path(new_name).stem
+                suffix = Path(new_name).suffix
+                while (file_path.parent / f"{stem}_{counter}{suffix}").exists():
+                    counter += 1
+                new_path = file_path.parent / f"{stem}_{counter}{suffix}"
+
+            file_path.rename(new_path)
+            logger.info(f"Smart renamed (external): {file_path.name} -> {new_path.name}")
+
+        return new_path
+
     async def _auto_forward_to_local(self, tg_clients, save_path: Path, task: Dict[str, Any]):
         """下载完成后自动转发到配置的本地聊天"""
         target = config.local_forward.target_chat.strip()
@@ -308,14 +479,17 @@ class DownloadManager:
             return
 
         try:
-            peer = await self._resolve_forward_peer(tg_clients.user_client, target)
+            peer, reply_to = await self._resolve_forward_peer(tg_clients.user_client, target)
             file_size = save_path.stat().st_size
             if file_size > 2000 * 1024 * 1024:
                 me = await tg_clients.user_client.get_me()
                 if not getattr(me, "premium", False):
-                    logger.warning(f"File over 2GB and account not premium, skipping local forward: {save_path.name}")
+                    logger.warning(
+                        f"File over 2GB and account not premium, skipping local forward: {save_path.name}"
+                    )
                     return
 
+            video_attrs = self._video_attrs_cache.pop(task["task_id"], {})
             force_doc = task.get("media_type") == "document"
             uploaded = await tg_clients.user_client.upload_file(
                 str(save_path),
@@ -327,6 +501,10 @@ class DownloadManager:
                 uploaded,
                 caption=f"📥 {task.get('file_name', '')}",
                 force_document=force_doc,
+                reply_to=reply_to,
+                attributes=video_attrs.get("attributes"),
+                supports_streaming=video_attrs.get("supports_streaming", False),
+                nosound_video=video_attrs.get("nosound") or None,
             )
             logger.info(f"Auto forwarded to local chat {target}: {save_path.name}")
 
@@ -336,7 +514,9 @@ class DownloadManager:
         except Exception as e:
             logger.error(f"Auto forward to local chat failed for {save_path.name}: {e}")
 
-    async def _forward_if_requested(self, tg_clients, save_path: Path, task: Dict[str, Any], task_data: Dict[str, Any]):
+    async def _forward_if_requested(
+        self, tg_clients, save_path: Path, task: Dict[str, Any], task_data: Dict[str, Any]
+    ):
         forward_target = task_data.get("forward_target")
         if not forward_target:
             return
@@ -344,8 +524,9 @@ class DownloadManager:
             raise RuntimeError("User client is required for forwarding")
 
         delete_after = bool(task_data.get("delete_after_forward", False))
+        video_attrs = self._video_attrs_cache.pop(task["task_id"], {})
         try:
-            peer = await self._resolve_forward_peer(tg_clients.user_client, forward_target)
+            peer, reply_to = await self._resolve_forward_peer(tg_clients.user_client, forward_target)
             file_size = save_path.stat().st_size
             if file_size > 2000 * 1024 * 1024:
                 me = await tg_clients.user_client.get_me()
@@ -363,12 +544,24 @@ class DownloadManager:
                 uploaded_file,
                 caption=task_data.get("caption", "") or "",
                 force_document=force_doc,
+                reply_to=reply_to,
+                attributes=video_attrs.get("attributes"),
+                supports_streaming=video_attrs.get("supports_streaming", False),
+                nosound_video=video_attrs.get("nosound") or None,
             )
         except Exception as e:
             if "SaveBigFilePartRequest" in str(e) or "file parts is invalid" in str(e):
                 await asyncio.sleep(3)
-                peer = await self._resolve_forward_peer(tg_clients.user_client, forward_target)
-                await tg_clients.user_client.send_file(peer, str(save_path), caption=task_data.get("caption", "") or "")
+                peer, reply_to = await self._resolve_forward_peer(tg_clients.user_client, forward_target)
+                await tg_clients.user_client.send_file(
+                    peer,
+                    str(save_path),
+                    caption=task_data.get("caption", "") or "",
+                    reply_to=reply_to,
+                    attributes=video_attrs.get("attributes"),
+                    supports_streaming=video_attrs.get("supports_streaming", False),
+                    nosound_video=video_attrs.get("nosound") or None,
+                )
             else:
                 raise
         finally:
@@ -376,27 +569,76 @@ class DownloadManager:
                 save_path.unlink(missing_ok=True)
 
     async def _resolve_forward_peer(self, client, target: Any):
+        """Resolve a forward target to (peer, reply_to_msg_id).
+
+        Extracts the optional message ID from t.me/c/CHANNEL/MSGID links
+        so the forwarded file can be sent as a reply to that message.
+        """
         cache_key = str(target).strip()
         if cache_key in self.forward_peer_cache:
             return self.forward_peer_cache[cache_key]
 
         candidates: list[Any] = [cache_key]
-        numeric_target = self._telegram_chat_id_or_none(cache_key)
-        if numeric_target is not None:
-            candidates.insert(0, numeric_target)
+        reply_to_msg_id: int | None = None
+
+        parsed_target = None
+        if "t.me/" in cache_key or "telegram.me/" in cache_key:
+            import re
+
+            private_match = re.search(
+                r"(?:https?://)?(?:t\.me|telegram\.me)/c/(\d+)(?:/(\d+))?", cache_key
+            )
+            if private_match:
+                parsed_target = int(f"-100{private_match.group(1)}")
+                if private_match.group(2):
+                    reply_to_msg_id = int(private_match.group(2))
+            else:
+                preview_match = re.search(
+                    r"(?:https?://)?(?:t\.me|telegram\.me)/s/([^/+?#\s]+)", cache_key
+                )
+                if preview_match:
+                    parsed_target = f"@{preview_match.group(1)}"
+                else:
+                    public_match = re.search(
+                        r"(?:https?://)?(?:t\.me|telegram\.me)/([^/+?#\s]+)(?:/(\d+))?", cache_key
+                    )
+                    if public_match:
+                        username = public_match.group(1)
+                        if public_match.group(2):
+                            reply_to_msg_id = int(public_match.group(2))
+                        if username.lower() not in (
+                            "joinchat",
+                            "contact",
+                            "share",
+                            "addstickers",
+                            "addtheme",
+                            "bg",
+                            "s",
+                        ):
+                            parsed_target = f"@{username}"
+
+        if parsed_target is not None:
+            candidates.insert(0, parsed_target)
+            numeric_target = self._telegram_chat_id_or_none(parsed_target)
+        else:
+            numeric_target = self._telegram_chat_id_or_none(cache_key)
+            if numeric_target is not None:
+                candidates.insert(0, numeric_target)
 
         for candidate in candidates:
             try:
                 peer = await client.get_input_entity(candidate)
-                self.forward_peer_cache[cache_key] = peer
-                return peer
+                result = (peer, reply_to_msg_id)
+                self.forward_peer_cache[cache_key] = result
+                return result
             except Exception:
                 pass
             try:
                 entity = await client.get_entity(candidate)
                 peer = await client.get_input_entity(entity)
-                self.forward_peer_cache[cache_key] = peer
-                return peer
+                result = (peer, reply_to_msg_id)
+                self.forward_peer_cache[cache_key] = result
+                return result
             except Exception:
                 pass
 
@@ -404,16 +646,18 @@ class DownloadManager:
             async for dialog in client.iter_dialogs(limit=None):
                 if int(dialog.id) == numeric_target:
                     peer = await client.get_input_entity(dialog.entity)
-                    self.forward_peer_cache[cache_key] = peer
-                    return peer
+                    result = (peer, reply_to_msg_id)
+                    self.forward_peer_cache[cache_key] = result
+                    return result
 
                 entity_id = getattr(dialog.entity, "id", None)
                 if entity_id is not None and str(numeric_target).startswith("-100"):
                     channel_id = int(str(numeric_target).replace("-100", ""))
                     if int(entity_id) == channel_id:
                         peer = await client.get_input_entity(dialog.entity)
-                        self.forward_peer_cache[cache_key] = peer
-                        return peer
+                        result = (peer, reply_to_msg_id)
+                        self.forward_peer_cache[cache_key] = result
+                        return result
 
         raise RuntimeError(
             f"Cannot resolve forward target {cache_key}. "
@@ -426,6 +670,8 @@ class DownloadManager:
         requester_id = self._telegram_chat_id_or_none(requester)
         if requester_id is None or not tg_clients.bot_client:
             return
+        if self._is_channel_or_group(requester_id):
+            return
         try:
             await tg_clients.bot_client.send_message(
                 requester_id,
@@ -434,7 +680,9 @@ class DownloadManager:
         except Exception as e:
             logger.warning(f"Failed to notify task success: {e}")
 
-    async def _notify_failure(self, tg_clients, task: Dict[str, Any], task_data: Dict[str, Any], error: Exception):
+    async def _notify_failure(
+        self, tg_clients, task: Dict[str, Any], task_data: Dict[str, Any], error: Exception
+    ):
         requester = task_data.get("requester_chat_id")
         requester_id = self._telegram_chat_id_or_none(requester)
         if requester_id is None or not tg_clients.bot_client:
@@ -446,6 +694,15 @@ class DownloadManager:
             )
         except Exception as e:
             logger.warning(f"Failed to notify task failure: {e}")
+
+    @staticmethod
+    def _is_channel_or_group(chat_id: Any) -> bool:
+        """Return True when chat_id refers to a channel or supergroup (not a private chat)."""
+        try:
+            cid = int(str(chat_id))
+            return cid < 0
+        except (TypeError, ValueError):
+            return False
 
     def _telegram_chat_id_or_none(self, value: Any) -> int | None:
         if value is None:
@@ -480,23 +737,74 @@ class DownloadManager:
     def _mime_to_ext(mime_type: str) -> str:
         """Map MIME type to file extension (with dot)."""
         mapping = {
-            "video/mp4": ".mp4", "video/x-matroska": ".mkv",
-            "video/webm": ".webm", "video/quicktime": ".mov",
-            "video/x-msvideo": ".avi", "video/mpeg": ".mpeg",
-            "audio/mpeg": ".mp3", "audio/mp4": ".m4a",
-            "audio/ogg": ".ogg", "audio/wav": ".wav",
-            "audio/flac": ".flac", "image/jpeg": ".jpg",
-            "image/png": ".png", "image/gif": ".gif",
-            "image/webp": ".webp", "application/pdf": ".pdf",
-            "application/zip": ".zip", "application/x-tar": ".tar.gz",
+            "video/mp4": ".mp4",
+            "video/x-matroska": ".mkv",
+            "video/webm": ".webm",
+            "video/quicktime": ".mov",
+            "video/x-msvideo": ".avi",
+            "video/mpeg": ".mpeg",
+            "audio/mpeg": ".mp3",
+            "audio/mp4": ".m4a",
+            "audio/ogg": ".ogg",
+            "audio/wav": ".wav",
+            "audio/flac": ".flac",
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/gif": ".gif",
+            "image/webp": ".webp",
+            "application/pdf": ".pdf",
+            "application/zip": ".zip",
+            "application/x-tar": ".tar.gz",
             "application/x-7z-compressed": ".7z",
             "application/x-rar-compressed": ".rar",
-            "text/plain": ".txt", "application/json": ".json",
+            "text/plain": ".txt",
+            "application/json": ".json",
         }
         return mapping.get(mime_type.split(";")[0].strip(), "")
 
-    def create_progress_callback(self, task_id: str, file_name: str = "",
-                                  bot_client=None, requester_chat_id=None, progress_msg_ref=None):
+    @staticmethod
+    def _extract_video_attributes(message) -> dict:
+        """Extract video attributes from a source message for send_file reuse.
+
+        Returns a dict with keys: supports_streaming, attributes, nosound.
+        All values are None when the message does not contain a video.
+        """
+        result: dict = {
+            "supports_streaming": False,
+            "attributes": None,
+            "nosound": False,
+        }
+
+        doc = getattr(message, "document", None)
+        if not doc:
+            return result
+
+        for attr in doc.attributes or []:
+            if isinstance(attr, DocumentAttributeVideo):
+                result["attributes"] = [
+                    DocumentAttributeVideo(
+                        duration=attr.duration,
+                        w=attr.w,
+                        h=attr.h,
+                        supports_streaming=True,
+                        nosound=getattr(attr, "nosound", False),
+                        preload_prefix_size=getattr(attr, "preload_prefix_size", None),
+                    )
+                ]
+                result["supports_streaming"] = True
+                result["nosound"] = bool(getattr(attr, "nosound", False))
+                break
+
+        return result
+
+    def create_progress_callback(
+        self,
+        task_id: str,
+        file_name: str = "",
+        bot_client=None,
+        requester_chat_id=None,
+        progress_msg_ref=None,
+    ):
         last_update_time = 0.0
         last_progress = -1
         last_notified_threshold = 0

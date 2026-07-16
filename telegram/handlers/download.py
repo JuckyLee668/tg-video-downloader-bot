@@ -1,6 +1,7 @@
 from core.database import db_manager
 from downloader.manager import download_manager
 from telegram import search as search_module
+from telegram.handlers.action_prompt import handle_media_action
 from telegram.handlers.utils import parse_indices
 from telegram.search_cache import search_cache
 from telegram.state_manager import state_manager
@@ -13,7 +14,6 @@ async def batch_download_handler(event, arg=None):
     if not arg:
         messages_to_download = last_results
     else:
-        # 解析范围 "1-3, 5"
         try:
             indices = parse_indices(arg)
             if not last_results:
@@ -30,9 +30,62 @@ async def batch_download_handler(event, arg=None):
         await event.respond("❌ 没有找到匹配内容。")
         return
 
+    # 单文件 → 交互式选择
+    if len(messages_to_download) == 1:
+        msg = messages_to_download[0]
+        info = _msg_to_info(msg)
+        info["source_data"] = _build_source_data(msg, event)
+        return await handle_media_action(event, info, source_type="telegram",
+                                         source_data=info.pop("source_data", {}))
+
+    # 批量 → 直接下载
     await event.respond(f"📥 正在将 {len(messages_to_download)} 个任务加入队列...")
     count = await search_module.searcher.batch_add_tasks(messages_to_download, str(event.chat_id))
     await event.respond(f"✅ 成功添加 {count} 个下载任务。")
+
+
+def _msg_to_info(msg) -> dict:
+    """从 Telegram Message 提取统一 info 格式。"""
+    name = getattr(msg.file, "name", "") if msg.file else ""
+    ext = name.rsplit(".", 1)[-1] if "." in (name or "") else "mp4"
+
+    duration = 0
+    width = height = 0
+    doc = getattr(msg, "document", None)
+    if doc:
+        from telethon.tl.types import DocumentAttributeVideo
+        for attr in (doc.attributes or []):
+            if isinstance(attr, DocumentAttributeVideo):
+                duration = attr.duration
+                width = attr.w
+                height = attr.h
+                break
+
+    resolution = f"{width}x{height}" if width and height else "未知"
+    return {
+        "title": name or f"media_{msg.id}",
+        "duration": duration,
+        "resolution": resolution,
+        "filesize": msg.file.size if msg.file else 0,
+        "uploader": getattr(msg.chat, "title", "") if msg.chat else "",
+        "ext": ext,
+        "message_id": msg.id,
+    }
+
+
+def _build_source_data(msg, event) -> dict:
+    """构建入队用的 source_data。"""
+    return {
+        "chat_id": str(event.chat_id),
+        "message_id": msg.id,
+        "channel_id": str(getattr(msg, "chat_id", event.chat_id)),
+        "access_hash": getattr(getattr(msg, "chat", None), "access_hash", None),
+        "channel_username": getattr(msg.chat, "username", "") if msg.chat else "",
+        "channel_title": getattr(msg.chat, "title", "") if msg.chat else "",
+        "media_type": msg.media.__class__.__name__ if msg.media else "unknown",
+        "caption": msg.message or "",
+        "original_file_name": getattr(msg.file, "name", "") if msg.file else "",
+    }
 
 async def batch_download_formats_handler(event, arg=None):
     # 此处逻辑较复杂，常需分步，所以 arg 可能包含格式

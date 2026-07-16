@@ -16,3 +16,4 @@ python-multipart==0.0.9
 pytest==8.3.4
 pytest-asyncio==0.24.0
 ruff==0.8.4
+yt-dlp>=2024.0.0

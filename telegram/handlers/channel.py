@@ -33,10 +33,16 @@ async def connect_channel_handler(event, arg=None):
 async def channels_list_handler(event, arg=None):
     channels = await db_manager.get_connected_channels()
     if not channels:
-        await event.respond("暂无已连接频道。")
+        await event.respond(
+            "暂无已连接频道。\n\n"
+            "💡 直接回复频道链接或 @username 即可添加。"
+        )
+        await state_manager.set(event.chat_id, {'command': 'cc'})
         return
 
-    response = "📵 已连接并保存的频道：\n\n"
+    response = "📺 **已连接的频道：**\n\n"
     for ch in channels:
-        response += f"- **{ch['title']}** (@{ch['username'] or 'N/A'})\n  ID: `{ch['channel_id']}`\n"
+        response += f"• **{ch['title']}** (@{ch['username'] or 'N/A'})\n  ID: `{ch['channel_id']}`\n"
+    response += "\n💡 直接回复链接或 @username 即可添加新频道"
     await event.respond(response)
+    await state_manager.set(event.chat_id, {'command': 'cc'})

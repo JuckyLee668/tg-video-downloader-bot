@@ -16,6 +16,7 @@ from telegram.handlers import (
     cmd_download,
     cmd_forward,
     cmd_search,
+    cmd_x,
     download,
     forward,
     local_forward,
@@ -30,53 +31,41 @@ from telegram.state_manager import state_manager
 
 # 命令映射表
 COMMAND_MAP = {
+    # 系统
     "start": system.start_handler,
     "help": system.help_handler,
     "h": system.help_handler,
     "status": system.status_handler,
     "s": system.status_handler,
-    "auth": auth.auth_status_handler,
     "login": auth.login_handler,
-    # 合并命令
+    # 频道
     "channel": cmd_channel.channel_handler,
+    # 搜索
     "search": cmd_search.search_handler,
+    # 下载
     "download": cmd_download.download_handler,
     "forward": cmd_forward.forward_handler,
-    # 旧命令保留别名
-    "cc": channel.connect_channel_handler,
-    "channels": channel.channels_list_handler,
-    "csk": search.search_keyword_handler,
-    "csr": search.search_recent_handler,
-    "cst": search.search_time_handler,
-    "sh": search.search_history_handler,
-    "bd": download.batch_download_handler,
-    "bdf": download.batch_download_formats_handler,
-    "bf": forward.batch_forward_handler,
     "dl": download.download_list_handler,
     "cancel": download.cancel_handler,
     "c": download.cancel_handler,
     "clear": download.clear_cache_handler,
     "cl": download.clear_cache_handler,
+    # 存储
     "files": storage.storage_handler,
     "f": storage.storage_handler,
-    "lf": local_forward.local_forward_handler,
+    # 配置
+    "autofwd": local_forward.local_forward_handler,
     "push": progress_push.progress_push_handler,
     "rename": smart_rename.smart_rename_handler,
     "watch": watch_handler.watch_handler,
+    # 云盘
     "aliyun": cmd_aliyun.aliyun_handler,
-}
-
-# 别名映射 (处理长短命令一致性)
-ALIAS_MAP = {
-    "channel_connect": "cc",
-    "channel_search_keyword": "csk",
-    "channel_search_recent": "csr",
-    "channel_search_time": "cst",
-    "search_history": "sh",
-    "batch_download": "bd",
-    "batch_download_formats": "bdf",
-    "download_list": "dl",
-    "batch_forward": "bf",
+    # 外部下载
+    "tw": cmd_x.x_handler,
+    # 旧命令别名（兼容老用户）
+    "bf": forward.batch_forward_handler,
+    "bd": download.batch_download_handler,
+    "bdf": download.batch_download_formats_handler,
 }
 
 _owner_user_id_cache = None
@@ -181,10 +170,6 @@ async def command_router(event):
     cmd = match.group(1).lower()
     arg = match.group(2)
 
-    # 处理别名
-    if cmd in ALIAS_MAP:
-        cmd = ALIAS_MAP[cmd]
-
     allow_login_bootstrap = (cmd == "login")
     if not await _ensure_authorized_or_reply(event, allow_login_bootstrap=allow_login_bootstrap):
         raise events.StopPropagation
@@ -203,15 +188,81 @@ async def command_router(event):
     # 停止后续 handler 触发 (Telethon 机制)
     raise events.StopPropagation
 
+async def _try_auth_token(event):
+    """用户发送 auth_token <auth_token值> <ct0值>，保存为 Twitter cookies 文件。"""
+    text = event.text.strip()
+    if not text.lower().startswith("auth_token"):
+        return False
+
+    parts = text.split(maxsplit=2)
+    auth_value = parts[1] if len(parts) > 1 else ""
+    ct0_value = parts[2] if len(parts) > 2 else ""
+
+    if not auth_value or not ct0_value:
+        await event.respond(
+            "🔑 用法：`auth_token <auth_token值> <ct0值>`\n\n"
+            "获取方式：\n"
+            "1. 浏览器打开 x.com 并登录\n"
+            "2. F12 → Application → Cookies → x.com\n"
+            "3. 找到 **auth_token** 和 **ct0**，复制值\n"
+            "4. 发给我，格式：`auth_token xxxxx yyyyy`"
+        )
+        return True
+
+    from pathlib import Path
+    cookies_path = Path(__file__).resolve().parent.parent / "data" / "twitter_cookies.txt"
+    cookies_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cookies_content = f"""# Netscape HTTP Cookie File
+# This is a generated file. Do not edit.
+.x.com\tTRUE\t/\tTRUE\t0\tauth_token\t{auth_value}
+.x.com\tTRUE\t/\tTRUE\t0\tct0\t{ct0_value}
+"""
+
+    cookies_path.write_text(cookies_content)
+    logger.info(f"Twitter cookies saved to {cookies_path}")
+
+    from downloader.external import external_downloader
+    external_downloader.cookies_file = str(cookies_path)
+
+    await event.respond("✅ Twitter cookies 已保存（auth_token + ct0），可以开始下载视频了。")
+    return True
+
+
+async def _try_url_auto_detect(event):
+    """检测消息是否为支持的视频链接，是则自动走交互流程。"""
+    text = event.text.strip()
+
+    # 检查是否为 URL
+    from downloader.external import external_downloader
+    if not external_downloader.is_supported(text):
+        return
+
+    if not await _ensure_authorized_or_reply(event):
+        raise events.StopPropagation
+
+    logger.info(f"Auto-detected external URL: {text[:80]}...")
+    from telegram.handlers.cmd_x import handle_interactive
+    await handle_interactive(event, text)
+    raise events.StopPropagation
+
+
 async def state_handler(event):
     """
     处理处于中间状态的交互逻辑 (FSM)
+    同时自动识别 URL（无状态时发送链接）
     """
     if not event.text or event.text.startswith('/'):
         return
 
     state = await state_manager.get(event.chat_id)
     if not state:
+        # auth_token 保存
+        if await _try_auth_token(event):
+            raise events.StopPropagation
+        # 无状态时，检查是否为支持的视频链接
+        await _try_url_auto_detect(event)
+        logger.info(f"No state for {event.chat_id}, text={event.text[:50] if event.text else '(no text)'}")
         return
 
     cmd = state.get('command')
@@ -220,11 +271,22 @@ async def state_handler(event):
     if not await _ensure_authorized_or_reply(event, allow_login_bootstrap=allow_login_bootstrap):
         raise events.StopPropagation
 
-    logger.debug(f"Processing state: user={event.chat_id}, cmd={cmd}, step={step}")
+    logger.info(f"Processing state: user={event.chat_id}, cmd={cmd}, step={step}")
 
     try:
+        # --- Action prompt (unified) ---
+        if cmd == 'action':
+            from telegram.handlers.action_prompt import handle_action_choice, handle_action_target
+            step = state.get("step")
+            if step == "choose":
+                await handle_action_choice(event, state)
+            elif step == "forward_target":
+                await handle_action_target(event, state)
+            else:
+                await state_manager.clear(event.chat_id)
+
         # --- LOGIN STATE ---
-        if cmd == 'login':
+        elif cmd == 'login':
             if step == 'phone':
                 phone = event.text.strip().replace(' ', '')
                 await tg_clients.send_code(phone)
@@ -292,6 +354,24 @@ async def state_handler(event):
                 delete_after = False if answer in ['no', 'n', '0'] else True
                 await state_manager.clear(event.chat_id)
                 await forward.do_bf(event, target, indices, delete_after)
+            elif step == 'large_file_choice':
+                choice = event.text.strip()
+                target = state.get('target')
+                indices = state.get('indices')
+                delete_after = state.get('delete_after')
+                if choice == '1':
+                    await state_manager.clear(event.chat_id)
+                    await forward.do_bf(event, target, indices, delete_after, exclude_large=True)
+                elif choice == '2':
+                    await state_manager.clear(event.chat_id)
+                    await event.respond("❌ 已取消整个转发任务。")
+                else:
+                    await event.respond("⚠️ 无效输入，请回复数字 1（排除并继续）或 2（取消任务）。")
+
+        # --- TW (Twitter) STATE ---
+        elif cmd == 'tw':
+            from telegram.handlers import cmd_x
+            await cmd_x.handle_x_state(event, state)
 
     except Exception as e:
         logger.exception(f"State handler error: {e}")
@@ -312,24 +392,53 @@ async def media_auto_handler(event):
     if not await _ensure_authorized_or_reply(event):
         return
 
-    # ... 这里保留你原来的 media_handler 逻辑，但调用 download_manager ...
+    # 过滤 bot 自己发送的消息（user_client 转发到频道/群组后 bot_client 也会看到）
+    sender_id = getattr(event.message, "sender_id", None)
+    if sender_id and tg_clients.user_client and await tg_clients.user_client.is_user_authorized():
+        me = await tg_clients.user_client.get_me()
+        if me and sender_id == me.id:
+            return
+
     chat_id = str(event.chat_id)
-    # 简化逻辑，实际项目中可从原 handlers 移过来
     media_type = "video" if event.message.video else "photo" if event.message.photo else "document"
     if media_type not in config.media_types:
         return
 
-    import os
-    raw_name = event.message.file.name
-    file_name = raw_name if (raw_name and os.path.splitext(raw_name)[0]) else f"media_{event.message.id}"
-    task = {
-        'chat_id': chat_id,
-        'message_id': event.message.id,
-        'file_name': file_name,
-        'media_type': media_type,
-        'file_size': event.message.file.size or 0,
-        'task_data': {'requester_chat_id': chat_id}
-    }
-    await download_manager.add_task(task)
-    if not event.message.grouped_id:
-        await event.respond(f"📥 已加入下载队列: `{task['file_name']}`")
+    # 群组媒体（相册）→ 批量静默入库
+    if event.message.grouped_id:
+        import os
+        raw_name = event.message.file.name
+        file_name = raw_name if (raw_name and os.path.splitext(raw_name)[0]) else f"media_{event.message.id}"
+        task = {
+            'chat_id': chat_id,
+            'message_id': event.message.id,
+            'file_name': file_name,
+            'media_type': media_type,
+            'file_size': event.message.file.size or 0,
+            'task_data': {'requester_chat_id': chat_id}
+        }
+        await download_manager.add_task(task)
+        return
+
+    # 频道/群组里静默入库
+    if download_manager._is_channel_or_group(chat_id):
+        import os
+        raw_name = event.message.file.name
+        file_name = raw_name if (raw_name and os.path.splitext(raw_name)[0]) else f"media_{event.message.id}"
+        task = {
+            'chat_id': chat_id,
+            'message_id': event.message.id,
+            'file_name': file_name,
+            'media_type': media_type,
+            'file_size': event.message.file.size or 0,
+            'task_data': {'requester_chat_id': chat_id}
+        }
+        await download_manager.add_task(task)
+        return
+
+    # 私聊单文件 → 交互式选择
+    from telegram.handlers.download import _build_source_data, _msg_to_info
+    info = _msg_to_info(event.message)
+    source_data = _build_source_data(event.message, event)
+    from telegram.handlers.action_prompt import handle_media_action
+    await handle_media_action(event, info, source_type="telegram", source_data=source_data)

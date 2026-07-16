@@ -47,7 +47,7 @@ async def search_keyword_handler(event, arg=None):
                 await send_thumbnails(event, thumb_items)
 
         # 用法提示放到最后
-        hint = "💡 用法：\n/bd [序号范围] 下载（默认全部）\n/bdf 格式 [序号范围] 按格式下载\n/bf 目标ID [序号范围] 转发"
+        hint = "💡 用法：\n/download [序号] 下载（默认全部）\n/download format 格式 按格式下载\n/forward [序号] 转发\n/forward to 目标 [序号] 指定目标转发"
         await event.respond(hint)
     except Exception as e:
         await event.respond(f"❌ 搜索出错: {str(e)}")
@@ -73,7 +73,7 @@ async def search_recent_handler(event, arg=None):
             name = msg.file.name or f"media_{msg.id}"
             response += f"`{i+1}.` {name}\n"
 
-        response += "\n💡 发送 `/bd` 即可全部下载，或 `/bf` `目标ID` 转发。"
+        response += "\n💡 发送 `/download` 即可全部下载，或 `/forward to 目标` 转发。"
         await event.respond(response)
     except Exception as e:
         await event.respond(f"❌ 获取出错: {str(e)}")
@@ -121,6 +121,6 @@ async def do_cst(event, start_str, end_str):
         await event.respond(f"🔍 正在搜索时间段: `{start_date.date()}` 至 `{end_date.date()}`...")
         messages = await search_module.searcher.search_by_time(start_date, end_date)
         search_cache.set(event.chat_id, messages)
-        await event.respond(f"✅ 找到 {len(messages)} 条媒体消息。发送 `/bd` 即可全部下载，或 `/bf` `目标ID` 转发。")
+        await event.respond(f"✅ 找到 {len(messages)} 条媒体消息。发送 `/download` 即可全部下载，或 `/forward to 目标` 转发。")
     except Exception as e:
         await event.respond(f"❌ 搜索出错: {str(e)}")
