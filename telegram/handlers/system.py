@@ -1,5 +1,9 @@
-import aiosqlite
+import os
 
+import aiosqlite
+from telethon import Button
+
+from core.config import config
 from core.database import db_manager
 from telegram.handlers.utils import format_size
 
@@ -70,3 +74,47 @@ async def status_handler(event, arg=None):
         status_text += "💤 当前没有正在运行的任务。"
 
     await event.respond(status_text)
+
+
+def _get_mini_app_url() -> str:
+    """Construct the Mini App URL from config or env var."""
+    env_url = os.getenv("MINI_APP_URL", "").strip()
+    if env_url:
+        return env_url.rstrip("/") + "/miniapp.html"
+    # Fallback: construct from web host/port
+    host = config.web_host
+    port = config.web_port
+    if host == "0.0.0.0":
+        host = "127.0.0.1"
+    scheme = "https" if port == 443 else "http"
+    return f"{scheme}://{host}:{port}/miniapp.html"
+
+
+async def panel_handler(event, arg=None):
+    """打开 Web 管理面板（Telegram Mini App）。"""
+    url = _get_mini_app_url()
+    await event.respond(
+        "📊 **TG Media Downloader 管理面板**\n\n"
+        "点击下方按钮在 Telegram 内打开管理面板：\n"
+        "• 查看/搜索频道媒体\n"
+        "• 管理下载队列\n"
+        "• 浏览本地文件\n"
+        "• 查看下载历史\n\n"
+        "💡 也可在浏览器中打开桌面版面板。",
+        buttons=[
+            [Button.url("📊 打开管理面板", url)],
+            [Button.inline("🌐 桌面版面板地址", b"panel:desktop_url")],
+        ],
+    )
+
+
+async def panel_callback_handler(event):
+    """处理面板相关内联按钮回调。"""
+    data = event.data.decode() if isinstance(event.data, bytes) else event.data
+
+    if data == "panel:desktop_url":
+        desktop_url = _get_mini_app_url().replace("miniapp.html", "")
+        await event.answer(
+            f"桌面版面板: {desktop_url}\n\n在浏览器中打开此地址即可使用桌面版管理面板。",
+            alert=True,
+        )

@@ -1,12 +1,14 @@
 import asyncio
+import hashlib
 import hmac
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs
 
 import aiosqlite
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from loguru import logger
 from pydantic import BaseModel
 
@@ -45,9 +47,74 @@ def _mask_secret(value: str, keep: int = 4) -> str:
     return f"{value[:keep]}{'*' * (len(value) - keep * 2)}{value[-keep:]}"
 
 
-async def require_api_key(x_api_key: str | None = Header(default=None)):
+def _validate_telegram_init_data(init_data: str) -> dict | None:
+    """Validate Telegram Mini App initData signature.
+
+    Returns the parsed user dict on success, None on failure.
+    See: https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
+    """
+    bot_token = config.bot_token
+    if not bot_token:
+        return None
+
+    # Parse the init_data query string
+    parsed = parse_qs(init_data)
+    # parse_qs returns {key: [value, ...]} — flatten to single values
+    params = {k: v[0] for k, v in parsed.items()}
+
+    received_hash = params.pop("hash", None)
+    if not received_hash:
+        return None
+
+    # Build data-check-string: sorted keys, "key=value" pairs joined by \n
+    data_check_string = "\n".join(
+        f"{k}={params[k]}" for k in sorted(params.keys())
+    )
+
+    # secret_key = HMAC-SHA256("WebAppData", bot_token)
+    secret_key = hmac.new(
+        b"WebAppData",
+        bot_token.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+
+    # computed_hash = hex(HMAC-SHA256(data_check_string, secret_key))
+    computed_hash = hmac.new(
+        secret_key,
+        data_check_string.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(computed_hash, received_hash):
+        return None
+
+    # Parse user info from the init data (JSON-encoded in the "user" param)
+    import json
+    try:
+        user = json.loads(params.get("user", "{}"))
+        return user
+    except (json.JSONDecodeError, TypeError):
+        return {"id": params.get("user", "")}
+
+
+async def require_api_key(
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+):
     global WEB_API_FAIL_COUNT, WEB_API_LOCKED
 
+    # ── Mini App auth: validate Telegram initData ──
+    if x_telegram_init_data:
+        user = _validate_telegram_init_data(x_telegram_init_data)
+        if user is not None:
+            # Store user id in request state for downstream use
+            request.state.tg_user = user
+            return
+        else:
+            raise HTTPException(status_code=401, detail="Invalid Telegram initData signature")
+
+    # ── Legacy WEB_API_KEY auth ──
     expected = (os.getenv("WEB_API_KEY") or "").strip()
     if config.environment.lower() in {"prod", "production"} and not expected:
         raise HTTPException(status_code=503, detail="WEB_API_KEY is required in production")

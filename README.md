@@ -9,6 +9,7 @@
 - **统一交互选项**：收到任何视频均可选择：仅下载 / 转发到频道 / 上传云盘 / 全部。
 - **默认操作**：配置 `/autofwd` 后，收到视频自动执行预设操作，无需手动选择。
 - **Web 控制台**：默认监听 `127.0.0.1:8000`，可查看队列、历史、频道、本地文件和登录状态。
+- **Telegram Mini App**：输入框右侧常驻 `📊 管理面板` 按钮，点击直接在 Telegram 内打开管理面板，无需离开聊天。
 - **批量任务队列**：下载任务落 SQLite，worker 通过数据库原子领取任务，避免重复处理。
 - **文件去重**：按 chat_id + message_id 自动去重，同一文件不会重复下载。
 - **智能重命名**：支持 `{channel_title}/{date}_{original_name}` 等变量，可按频道/日期自动分目录。
@@ -61,16 +62,20 @@ telegram/              Telethon 客户端、路由、命令和频道搜索
     storage.py         本地文件管理
     system.py          帮助 / 状态
     thumbnail.py       缩略图生成 (视频/图片)
-    local_forward.py   默认操作配置 (/autofwd)
+    local_forward.py   默认操作配置 (/autofwd，支持内联键盘)
     watch_handler.py   频道自动监控配置
     utils.py           公用工具 (索引解析、格式化、文件名提取、文件信息)
+    progress_push.py   下载进度推送
+    smart_rename.py    智能重命名
 
 web/                   FastAPI 应用、API 路由和请求模型
   server.py            FastAPI 应用创建
-  routes.py            API 路由
+  routes.py            API 路由 (含 Telegram Mini App initData 验证)
   api_models.py        Pydantic 请求模型
 
 public/                Web 静态页面
+  index.html           桌面版管理面板
+  miniapp.html         Telegram Mini App 管理面板
 tests/                 pytest 测试
 data/                  SQLite 数据库、cookies 文件
 ```
@@ -331,7 +336,8 @@ user_api:
 | `/clear` `/cl` | 清理下载队列 | — |
 | `/files` `/f` | 本地文件管理 | `del <序号>`、`clear`、`thumbs` |
 | `/aliyun` | 阿里云盘管理 | `login`、`logout`、`ls`、`tree`、`on`、`off`、`path` |
-| `/autofwd` | 默认操作配置 | `on`、`off`、`action <类型>`、`target <id>` |
+| `/autofwd` | 默认操作配置 | 内联键盘 1/2/3/4 或 `on`、`off`、`action <类型>`、`target <id>` |
+| `/panel` | Web 管理面板 (Mini App) | 发送带按钮的消息，点击在 Telegram 内打开 |
 | `/push` | 下载进度推送 | `on`、`off` |
 | `/rename` | 智能重命名 | `set <pattern>`、`on`、`off` |
 | `/watch` | 频道自动监控 | `add`、`remove`、`on`、`off` |
@@ -346,9 +352,20 @@ user_api:
 
 ### 默认操作命令
 
+发送 `/autofwd` 查看当前配置，同时显示交互式内联键盘：
+
+| 按钮 | 功能 |
+|------|------|
+| **1️⃣ 启用** | 启用默认操作 |
+| **2️⃣ 禁用** | 禁用默认操作 |
+| **3️⃣ 设置操作** | 选择：📥下载 / 📤转发 / ☁️云盘 / 🔄全部 |
+| **4️⃣ 设置转发目标** | 输入目标 ID 或 @username |
+
+旧的文本子命令仍兼容：
+
 | 命令 | 说明 |
 |------|------|
-| `/autofwd` | 查看当前配置 |
+| `/autofwd` | 查看当前配置（带内联键盘） |
 | `/autofwd on` | 启用 — 收到视频自动执行 |
 | `/autofwd off` | 禁用 — 收到视频询问操作 |
 | `/autofwd action download` | 默认：下载到本地 |
@@ -395,6 +412,19 @@ http://127.0.0.1:8000
 - 配置代理
 - 本地文件管理（查看/删除/清空）
 - 缩略图缓存管理
+
+## Telegram Mini App
+
+Bot 输入框右侧常驻 **📊 管理面板** 按钮（MenuButton），或发送 `/panel` 命令，即可在 Telegram 内直接打开管理面板。无需离开聊天、无需输入 API Key。
+
+功能与桌面版 Web 控制台一致：频道管理、搜索媒体、下载队列、本地文件、历史记录。
+
+Mini App 自动适配 Telegram 主题色（日间/夜间模式），认证通过 Telegram `initData` 签名验证。
+
+> ⚠️ **Mini App 要求 HTTPS**。本地开发建议用 ngrok/cloudflare tunnel 代理，并设置环境变量：
+> ```env
+> MINI_APP_URL=https://your-domain.com
+> ```
 
 ## 数据库与队列
 

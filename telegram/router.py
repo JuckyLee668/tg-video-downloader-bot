@@ -55,6 +55,7 @@ COMMAND_MAP = {
     "f": storage.storage_handler,
     # 配置
     "autofwd": local_forward.local_forward_handler,
+    "panel": system.panel_handler,
     "push": progress_push.progress_push_handler,
     "rename": smart_rename.smart_rename_handler,
     "watch": watch_handler.watch_handler,
