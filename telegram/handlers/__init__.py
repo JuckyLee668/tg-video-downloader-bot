@@ -55,7 +55,7 @@ def setup_handlers():
             from telegram.handlers.system import _get_mini_app_url
             mini_app_url = _get_mini_app_url()
             await bot(functions.bots.SetBotMenuButtonRequest(
-                user_id='',
+                user_id=types.InputUserSelf(),
                 button=types.BotMenuButton(
                     text='📊 管理面板',
                     url=mini_app_url,
