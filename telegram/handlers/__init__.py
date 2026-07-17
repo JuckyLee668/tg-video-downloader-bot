@@ -44,7 +44,7 @@ def setup_handlers():
                     types.BotCommand(command='watch', description='频道自动监控'),
                     types.BotCommand(command='tw', description='Twitter/X 视频下载'),
                     types.BotCommand(command='autofwd', description='自动转发配置'),
-                    types.BotCommand(command='panel', description='Web 管理面板 (Mini App)'),
+                    # types.BotCommand(command='panel', description='Web 管理面板 (Mini App)'),  # 已屏蔽
                     types.BotCommand(command='push', description='进度推送'),
                     types.BotCommand(command='rename', description='智能重命名'),
                     types.BotCommand(command='help', description='完整菜单'),
