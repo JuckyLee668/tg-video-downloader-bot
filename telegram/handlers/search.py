@@ -153,22 +153,26 @@ async def search_keyword_handler(event, arg=None):
             await event.respond("📭 未找到相关媒体消息。")
             return
 
-        response = f"🔍 **找到 {len(messages)} 条媒体消息:**\n\n"
-        for i, msg in enumerate(messages[:20]):
-            name = msg.file.name or f"media_{msg.id}"
-            response += f"`{i+1}.` {name} (ID: `{msg.id}`)\n"
-
+        # 头部：显示找到数量
+        header = f"🔍 **找到 {len(messages)} 条媒体消息:**"
         if len(messages) > 20:
-            response += f"\n... 以及另外 {len(messages)-20} 条消息。"
-        await event.respond(response)
+            header += f"\n（显示前 20 条，另 {len(messages)-20} 条未列出）"
+        await event.respond(header)
 
-        # 缩略图打包成一个相册
+        # 逐张发送缩略图，每张配文件名（图片在上，文字在下）
         await asyncio.sleep(0.3)
         if tg_clients.user_client and await tg_clients.user_client.is_user_authorized():
             await cleanup_old_thumbs()
             thumb_items = await generate_thumbnails(tg_clients.user_client, messages[:20])
             if thumb_items:
                 await send_thumbnails(event, thumb_items)
+            else:
+                # 无缩略图时回退到纯文本列表
+                text_list = ""
+                for i, msg in enumerate(messages[:20]):
+                    name = msg.file.name or f"media_{msg.id}"
+                    text_list += f"`{i+1}.` {name} (ID: `{msg.id}`)\n"
+                await event.respond(text_list)
 
         # Hint — auto-select mode when autofwd enabled
         hint = _build_hint_with_state(messages, event.chat_id)
@@ -192,12 +196,24 @@ async def search_recent_handler(event, arg=None):
             await event.respond("📭 未找到相关媒体消息。")
             return
 
-        response = f"🔍 **找到 {len(messages)} 条媒体消息:**\n\n"
-        for i, msg in enumerate(messages[:20]):
-            name = msg.file.name or f"media_{msg.id}"
-            response += f"`{i+1}.` {name}\n"
+        header = f"🔍 **找到 {len(messages)} 条媒体消息:**"
+        if len(messages) > 20:
+            header += f"\n（显示前 20 条，另 {len(messages)-20} 条未列出）"
+        await event.respond(header)
 
-        await event.respond(response)
+        # 逐张发送缩略图，每张配文件名
+        await asyncio.sleep(0.3)
+        if tg_clients.user_client and await tg_clients.user_client.is_user_authorized():
+            await cleanup_old_thumbs()
+            thumb_items = await generate_thumbnails(tg_clients.user_client, messages[:20])
+            if thumb_items:
+                await send_thumbnails(event, thumb_items)
+            else:
+                text_list = ""
+                for i, msg in enumerate(messages[:20]):
+                    name = msg.file.name or f"media_{msg.id}"
+                    text_list += f"`{i+1}.` {name}\n"
+                await event.respond(text_list)
 
         hint = _build_hint_with_state(messages, event.chat_id)
         await event.respond(hint)

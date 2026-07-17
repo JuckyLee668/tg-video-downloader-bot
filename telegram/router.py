@@ -368,6 +368,11 @@ async def state_handler(event):
                 else:
                     await event.respond("⚠️ 无效输入，请回复数字 1（排除并继续）或 2（取消任务）。")
 
+        # --- AUTOFWD TARGET (inline button → FSM) ---
+        elif cmd == 'autofwd_target':
+            from telegram.handlers.local_forward import handle_autofwd_target
+            await handle_autofwd_target(event, state)
+
         # --- SEARCH SELECT (autofwd post-search index selection) ---
         elif cmd == 'search_select':
             from telegram.handlers.search import handle_search_select

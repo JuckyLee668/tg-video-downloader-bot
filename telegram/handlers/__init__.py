@@ -1,9 +1,11 @@
 import asyncio
+import re
 
 from loguru import logger
 from telethon import events
 
 from telegram.client import tg_clients
+from telegram.handlers.local_forward import autofwd_callback_handler
 from telegram.router import command_router, media_auto_handler, state_handler
 
 
@@ -59,5 +61,11 @@ def setup_handlers():
     bot.add_event_handler(state_handler, events.NewMessage(incoming=True))
     bot.add_event_handler(command_router, events.NewMessage(incoming=True, pattern=r'^/'))
     bot.add_event_handler(media_auto_handler, events.NewMessage(incoming=True))
+
+    # 3. 注册内联按钮回调处理器
+    bot.add_event_handler(
+        autofwd_callback_handler,
+        events.CallbackQuery(data=re.compile(rb'^autofwd:'))
+    )
 
     logger.info("Bot 生产级路由系统已全面加载")

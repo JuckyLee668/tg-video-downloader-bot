@@ -109,21 +109,18 @@ async def generate_thumbnails(
 
 async def send_thumbnails(event, thumb_items: List[Tuple[Path, str]]):
     """
-    以相册形式发送缩略图，不带标题。
+    逐张发送缩略图，每张图片配文件名作为标题（图片在上，文字在下）。
     thumb_items: [(图片路径, 文件名), ...]
     """
     if not thumb_items:
         return
-    try:
-        batch_size = 10
-        for i in range(0, len(thumb_items), batch_size):
-            batch = thumb_items[i:i + batch_size]
-            files = [str(p) for p, _ in batch]
-            await event.client.send_file(event.chat_id, files, album=True)
-    except Exception as e:
-        logger.warning(f"Failed to send thumbnail album: {e}")
+    for idx, (path, fname) in enumerate(thumb_items, start=1):
         try:
-            for p, _ in thumb_items:
-                await event.client.send_file(event.chat_id, str(p))
-        except Exception:
-            pass
+            await event.client.send_file(
+                event.chat_id,
+                str(path),
+                caption=f"`{idx}.` {fname}",
+                parse_mode="markdown",
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send thumbnail {idx}: {e}")

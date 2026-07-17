@@ -125,6 +125,8 @@ async def cancel_handler(event, arg=None):
     # 清除内存中活跃任务标记，让 worker 重新取队列
     download_manager.active_tasks.clear()
     await download_manager.wake_workers()
+    # 清除 FSM 状态（如 autofwd_target 输入流程等）
+    await state_manager.clear(event.chat_id)
     await event.respond("🚫 已取消所有下载任务。")
 
 async def clear_cache_handler(event, arg=None):
