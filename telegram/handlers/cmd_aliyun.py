@@ -290,6 +290,95 @@ async def _show_status(event):
     await event.respond(text)
 
 
+async def _cmd_login_async(event):
+    """内联键盘版本：登录。使用 event.edit() 更新消息。"""
+    bin_path = _find_aliyunpan()
+    if not bin_path:
+        await event.edit("❌ aliyunpan CLI 未安装。\n请手动安装后重试。", buttons=_aliyun_keyboard())
+        return
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            bin_path, "login",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+        output = stdout.decode("utf-8", errors="replace")
+
+        import re
+        urls = re.findall(r'https?://[^\s]+', output)
+        qr_url = ""
+        for u in urls:
+            if "aliyundrive" in u or "qr" in u or "qrcode" in u:
+                qr_url = u
+                break
+        if not qr_url and urls:
+            qr_url = urls[0]
+
+        text = "🔑 **登录阿里云盘**\n\n"
+        if qr_url:
+            text += f"请打开链接扫码登录:\n`{qr_url}`\n\n"
+        text += "打开链接 → 扫码 → 确认登录即可。\n登录完成后再次点击状态按钮查看。"
+        await event.edit(text, buttons=_aliyun_keyboard())
+    except asyncio.TimeoutError:
+        await event.edit("⏱️ 登录超时。请重试。", buttons=_aliyun_keyboard())
+    except Exception as e:
+        await event.edit(f"❌ 登录失败: {e}", buttons=_aliyun_keyboard())
+
+
+async def _cmd_ls_inline(event, path: str):
+    """内联键盘版本：列出文件。"""
+    bin_path = _find_aliyunpan()
+    if not bin_path:
+        await event.edit("❌ aliyunpan CLI 未安装。", buttons=_aliyun_keyboard())
+        return
+    try:
+        args = ["ls", path] if path else ["ls"]
+        proc = await asyncio.create_subprocess_exec(
+            bin_path, *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+        out = stdout.decode("utf-8", errors="replace")
+        lines = out.split("\n")
+        display = "\n".join(lines[:30])
+        if len(lines) > 30:
+            display += f"\n... 还有 {len(lines) - 30} 行"
+        await event.edit(f"📂 **阿里云盘文件**\n\n`{display}`", buttons=_aliyun_keyboard())
+    except asyncio.TimeoutError:
+        await event.edit("⏱️ 请求超时。", buttons=_aliyun_keyboard())
+    except Exception as e:
+        await event.edit(f"❌ {e}", buttons=_aliyun_keyboard())
+
+
+async def _cmd_tree_inline(event, path: str):
+    """内联键盘版本：目录树。"""
+    bin_path = _find_aliyunpan()
+    if not bin_path:
+        await event.edit("❌ aliyunpan CLI 未安装。", buttons=_aliyun_keyboard())
+        return
+    try:
+        args = ["tree", path] if path else ["tree"]
+        proc = await asyncio.create_subprocess_exec(
+            bin_path, *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+        out = stdout.decode("utf-8", errors="replace")
+        lines = out.split("\n")
+        display = "\n".join(lines[:30])
+        if len(lines) > 30:
+            display += f"\n... 还有 {len(lines) - 30} 行"
+        await event.edit(f"🌳 **阿里云盘目录树**\n\n`{display}`", buttons=_aliyun_keyboard())
+    except asyncio.TimeoutError:
+        await event.edit("⏱️ 请求超时。", buttons=_aliyun_keyboard())
+    except Exception as e:
+        await event.edit(f"❌ {e}", buttons=_aliyun_keyboard())
+
+
 async def _cmd_login(event):
     """扫码登录。aliyunpan login 需要交互，生成二维码后用户需手动扫码。"""
     bin_path = _find_aliyunpan()
@@ -489,26 +578,26 @@ async def aliyun_callback_handler(event):
         await event.edit(text, buttons=_aliyun_keyboard())
         return
 
-    # 耗时操作 — 回复新消息
+    # 耗时操作 — 后台执行
     if data == "aliyun:login":
-        await event.answer("正在生成登录二维码...")
-        await _cmd_login(event)
+        await event.edit("🔑 正在生成登录二维码...")
+        await _cmd_login_async(event)
         return
 
     if data == "aliyun:logout":
+        await event.edit("🚪 正在退出...")
         _, out = await _run_aliyunpan("logout")
-        await event.answer("已退出登录")
-        await event.respond(f"✅ 已退出登录。\n`{out[:200]}`")
+        await event.edit(f"✅ 已退出登录。\n`{out[:200]}`", buttons=_aliyun_keyboard())
         return
 
     if data == "aliyun:ls":
-        await event.answer("正在列出文件...")
-        await _cmd_ls(event, "")
+        await event.edit("📂 正在列出文件...")
+        await _cmd_ls_inline(event, "")
         return
 
     if data == "aliyun:tree":
-        await event.answer("正在获取目录树...")
-        await _cmd_tree(event, "")
+        await event.edit("🌳 正在获取目录树...")
+        await _cmd_tree_inline(event, "")
         return
 
 

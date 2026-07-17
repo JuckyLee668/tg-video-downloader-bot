@@ -116,6 +116,13 @@ class DownloadManager:
                 and requester_id
                 and not self._is_channel_or_group(requester_id)
             ):
+                # Clean up any stale progress message from a previous attempt (retry case)
+                old_ids = self._progress_msg_ids.pop(task_id, None)
+                if old_ids:
+                    try:
+                        await tg_clients.bot_client.delete_messages(requester_id, old_ids[0])
+                    except Exception:
+                        pass
                 try:
                     msg = await tg_clients.bot_client.send_message(
                         requester_id,
@@ -241,6 +248,8 @@ class DownloadManager:
                     thumb_path.unlink(missing_ok=True)
                 except Exception:
                     pass
+            # Safety net: clean up any remaining progress message references
+            self._progress_msg_ids.pop(task_id, None)
 
     async def _resolve_message(self, tg_clients, task: Dict[str, Any], task_data: Dict[str, Any]):
         download_client = None
@@ -704,10 +713,25 @@ class DownloadManager:
             return
         if self._is_channel_or_group(requester_id):
             return
+
+        # Edit the progress message to show completion, then clean up
+        task_id = task.get("task_id", "")
+        progress_ids = self._progress_msg_ids.pop(task_id, None)
+        if progress_ids:
+            try:
+                await tg_clients.bot_client.edit_message(
+                    requester_id,
+                    progress_ids[0],
+                    f"✅ Completed: `{task.get('file_name')}`",
+                )
+                return
+            except Exception:
+                pass
+
         try:
             await tg_clients.bot_client.send_message(
                 requester_id,
-                f"Task completed: `{task.get('file_name')}`",
+                f"✅ Completed: `{task.get('file_name')}`",
             )
         except Exception as e:
             logger.warning(f"Failed to notify task success: {e}")
@@ -719,10 +743,22 @@ class DownloadManager:
         requester_id = self._telegram_chat_id_or_none(requester)
         if requester_id is None or not tg_clients.bot_client:
             return
+        if self._is_channel_or_group(requester_id):
+            return
+
+        # Clean up stale progress message
+        task_id = task.get("task_id", "")
+        progress_ids = self._progress_msg_ids.pop(task_id, None)
+        if progress_ids:
+            try:
+                await tg_clients.bot_client.delete_messages(requester_id, progress_ids[0])
+            except Exception:
+                pass
+
         try:
             await tg_clients.bot_client.send_message(
                 requester_id,
-                f"Task failed: `{task.get('file_name')}`\n{error}",
+                f"❌ Failed: `{task.get('file_name')}`\n{error}",
             )
         except Exception as e:
             logger.warning(f"Failed to notify task failure: {e}")
