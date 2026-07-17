@@ -12,12 +12,15 @@ from telegram.state_manager import state_manager
 async def x_handler(event, arg=None):
     """/tw 命令入口"""
     if not arg:
+        login_status = "✅ 已配置" if external_downloader.cookies_file else "❌ 未配置"
         await event.respond(
             "🎬 **外部视频下载**\n\n"
+            f"登录状态：{login_status}\n\n"
             "用法：\n"
             "• `/tw <链接>` — 解析视频并选择操作\n"
             "• 直接发链接 — 自动识别\n\n"
-            "支持：Twitter / X"
+            "支持：Twitter / X\n\n"
+            "🔑 未登录？发送 `auth_token <auth_token值> <ct0值>` 配置"
         )
         return
 
@@ -29,6 +32,20 @@ async def handle_interactive(event, url: str):
     """交互模式：提取信息 → 让用户选择（也可从自动识别调用）"""
     if not external_downloader.is_supported(url):
         await event.respond("❌ 暂不支持此链接，目前支持 Twitter / X。")
+        return
+
+    # 检查是否已登录（cookies 文件是否存在）
+    if not external_downloader.cookies_file:
+        await event.respond(
+            "⚠️ **未登录 Twitter / X**\n\n"
+            "请先配置 cookies 后才能下载推文视频：\n\n"
+            "🔑 使用方法：\n"
+            "1. 浏览器打开 x.com 并登录\n"
+            "2. F12 → Application → Cookies → x.com\n"
+            "3. 找到 **auth_token** 和 **ct0**，复制值\n"
+            "4. 发给我，格式：`auth_token <auth_token值> <ct0值>`\n\n"
+            "配置完成后再次发送链接即可。"
+        )
         return
 
     try:
