@@ -149,6 +149,12 @@ class DownloadManager:
                 if video_attrs["attributes"]:
                     self._video_attrs_cache[task_id] = video_attrs
 
+                # Download video thumbnail for cover image on forward
+                if getattr(message_obj, "video", None):
+                    thumb_path = await self._download_thumb(download_client, message_obj, task_id)
+                    if thumb_path:
+                        self._video_attrs_cache.setdefault(task_id, {})["thumb"] = thumb_path
+
                 actual_path = await self._download_if_needed(
                     download_client,
                     message_obj,
@@ -226,7 +232,15 @@ class DownloadManager:
                     await self._notify_failure(tg_clients, task, task_data, e)
         finally:
             self.active_tasks.discard(task_id)
-            self._video_attrs_cache.pop(task_id, None)
+            cached = self._video_attrs_cache.pop(task_id, None)
+            if cached and cached.get("thumb"):
+                thumb_path = cached["thumb"]
+                if isinstance(thumb_path, str):
+                    thumb_path = Path(thumb_path)
+                try:
+                    thumb_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     async def _resolve_message(self, tg_clients, task: Dict[str, Any], task_data: Dict[str, Any]):
         download_client = None
@@ -516,6 +530,7 @@ class DownloadManager:
                 attributes=video_attrs.get("attributes"),
                 supports_streaming=video_attrs.get("supports_streaming", False),
                 nosound_video=video_attrs.get("nosound") or None,
+                thumb=video_attrs.get("thumb"),
             )
             logger.info(f"Auto forwarded to local chat {target}: {save_path.name}")
 
@@ -558,6 +573,7 @@ class DownloadManager:
                 attributes=video_attrs.get("attributes"),
                 supports_streaming=video_attrs.get("supports_streaming", False),
                 nosound_video=video_attrs.get("nosound") or None,
+                thumb=video_attrs.get("thumb"),
             )
         except Exception as e:
             if "SaveBigFilePartRequest" in str(e) or "file parts is invalid" in str(e):
@@ -571,6 +587,7 @@ class DownloadManager:
                     attributes=video_attrs.get("attributes"),
                     supports_streaming=video_attrs.get("supports_streaming", False),
                     nosound_video=video_attrs.get("nosound") or None,
+                    thumb=video_attrs.get("thumb"),
                 )
             else:
                 raise
@@ -803,6 +820,29 @@ class DownloadManager:
                 break
 
         return result
+
+    @staticmethod
+    async def _download_thumb(client, message, task_id: str) -> str | None:
+        """Download the built-in video thumbnail from a Telegram message.
+
+        Returns the path to the JPEG thumbnail file, or None if unavailable.
+        """
+        try:
+            result = await client.download_media(message, thumb=-1)
+            if result and Path(result).stat().st_size > 0:
+                # Move to a stable location keyed by task_id so it doesn't
+                # conflict with the download engine's temp paths.
+                thumb_dir = Path(config.save_path).parent / ".tg_thumbs"
+                thumb_dir.mkdir(parents=True, exist_ok=True)
+                dest = thumb_dir / f"thumb_{task_id}.jpg"
+                src = Path(result)
+                if src != dest:
+                    import os
+                    os.rename(str(src), str(dest))
+                return str(dest)
+        except Exception as e:
+            logger.debug(f"Failed to download thumb for task {task_id}: {e}")
+        return None
 
     def create_progress_callback(
         self,
