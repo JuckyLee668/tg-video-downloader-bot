@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>TG Media Downloader</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
@@ -16,87 +16,228 @@
             --tg-secondary-bg: #f3f4f6;
             --tg-section-bg: #ffffff;
             --tg-destructive: #ef4444;
+            --tg-link: #3b82f6;
+            --safe-bottom: env(safe-area-inset-bottom, 0px);
+            --safe-top: env(safe-area-inset-top, 0px);
         }
+
+        * {
+            -webkit-tap-highlight-color: transparent;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        .selectable {
+            -webkit-user-select: text;
+            user-select: text;
+        }
+
         body {
             background: var(--tg-bg);
             color: var(--tg-text);
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            padding-bottom: 64px; /* space for bottom tabs */
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
+            padding-top: var(--safe-top);
+            padding-bottom: calc(72px + var(--safe-bottom));
+            margin: 0;
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
-        .tab-content { display: none; }
-        .tab-content.active { display: block; }
+
+        /* ── Tab Content ── */
+        .tab-content { display: none; opacity: 0; transform: translateY(8px); transition: opacity 0.2s ease, transform 0.2s ease; }
+        .tab-content.active { display: block; opacity: 1; transform: translateY(0); }
+
+        /* ── Bottom Tab Bar ── */
+        .bottom-tab-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            display: flex;
+            background: var(--tg-section-bg);
+            border-top: 0.5px solid rgba(0,0,0,0.08);
+            padding-bottom: var(--safe-bottom);
+            z-index: 100;
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
         .bottom-tab {
-            background: var(--tg-secondary-bg);
-            color: var(--tg-hint);
             flex: 1;
-            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 2px;
             padding: 8px 4px;
-            font-size: 11px;
-            cursor: pointer;
-            transition: color 0.2s;
+            min-height: 56px;
+            background: none;
             border: none;
+            color: var(--tg-hint);
+            font-size: 10px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: color 0.15s;
+            -webkit-tap-highlight-color: transparent;
+            position: relative;
         }
-        .bottom-tab.active { color: var(--tg-button); font-weight: 600; }
-        .bottom-tab .tab-icon { font-size: 20px; display: block; margin-bottom: 2px; }
+        .bottom-tab:active { opacity: 0.7; }
+        .bottom-tab.active { color: var(--tg-button); }
+        .bottom-tab .tab-icon { font-size: 22px; line-height: 1; transition: transform 0.15s; }
+        .bottom-tab.active .tab-icon { transform: scale(1.1); }
+        .bottom-tab .tab-badge {
+            position: absolute;
+            top: 6px;
+            left: 50%;
+            margin-left: 10px;
+            min-width: 16px;
+            height: 16px;
+            border-radius: 8px;
+            background: var(--tg-destructive);
+            color: #fff;
+            font-size: 10px;
+            font-weight: 700;
+            line-height: 16px;
+            text-align: center;
+            padding: 0 4px;
+        }
+
+        /* ── Cards ── */
         .card {
             background: var(--tg-section-bg);
-            border-radius: 12px;
+            border-radius: 16px;
             padding: 16px;
-            margin-bottom: 12px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+            margin-bottom: 10px;
+            box-shadow: 0 0.5px 1px rgba(0,0,0,0.04), 0 2px 8px rgba(0,0,0,0.04);
+            transition: box-shadow 0.2s;
         }
+        .card:active { box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+        .card-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--tg-hint);
+            letter-spacing: 0.3px;
+            text-transform: uppercase;
+        }
+
+        /* ── Buttons ── */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            border: none;
+            border-radius: 12px;
+            padding: 12px 18px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            min-height: 44px;
+            transition: opacity 0.15s, transform 0.1s;
+            white-space: nowrap;
+        }
+        .btn:active { opacity: 0.8; transform: scale(0.97); }
+
         .btn-primary {
             background: var(--tg-button);
             color: var(--tg-button-text);
-            border: none;
-            border-radius: 8px;
-            padding: 10px 16px;
-            font-size: 14px;
-            font-weight: 500;
-            cursor: pointer;
             width: 100%;
         }
+
         .btn-secondary {
             background: var(--tg-secondary-bg);
             color: var(--tg-text);
-            border: 1px solid #d1d5db;
-            border-radius: 8px;
-            padding: 10px 16px;
-            font-size: 14px;
-            cursor: pointer;
             width: 100%;
         }
+
         .btn-danger {
             background: var(--tg-destructive);
             color: #ffffff;
-            border: none;
-            border-radius: 8px;
-            padding: 8px 14px;
-            font-size: 13px;
-            cursor: pointer;
         }
+
+        .btn-outline {
+            background: transparent;
+            color: var(--tg-button);
+            border: 1.5px solid var(--tg-button);
+        }
+
         .btn-sm {
-            padding: 6px 12px;
+            padding: 8px 14px;
             font-size: 12px;
-            border-radius: 6px;
+            border-radius: 10px;
+            min-height: 36px;
         }
+
+        .btn-xs {
+            padding: 5px 10px;
+            font-size: 11px;
+            border-radius: 8px;
+            min-height: 30px;
+        }
+
+        .btn-icon {
+            width: 44px;
+            height: 44px;
+            padding: 0;
+            border-radius: 12px;
+            background: var(--tg-secondary-bg);
+            border: none;
+            color: var(--tg-text);
+            font-size: 18px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: opacity 0.15s;
+        }
+        .btn-icon:active { opacity: 0.6; }
+
+        /* ── Inputs ── */
         .input-field {
             width: 100%;
-            padding: 10px 12px;
-            border: 1px solid #d1d5db;
-            border-radius: 8px;
-            font-size: 14px;
-            background: var(--tg-section-bg);
+            padding: 12px 14px;
+            border: 1.5px solid rgba(0,0,0,0.1);
+            border-radius: 12px;
+            font-size: 15px;
+            background: var(--tg-secondary-bg);
             color: var(--tg-text);
             box-sizing: border-box;
+            min-height: 48px;
+            -webkit-appearance: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
         }
+        .input-field:focus {
+            outline: none;
+            border-color: var(--tg-button);
+            box-shadow: 0 0 0 3px rgba(59,130,246,0.12);
+        }
+        .input-field::placeholder { color: var(--tg-hint); }
+
+        select.input-field {
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23999' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            padding-right: 36px;
+        }
+
+        /* ── Badges ── */
         .badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 10px;
+            display: inline-flex;
+            align-items: center;
+            padding: 3px 8px;
+            border-radius: 8px;
             font-size: 10px;
             font-weight: 600;
             text-transform: uppercase;
+            letter-spacing: 0.3px;
+            white-space: nowrap;
         }
         .badge-blue { background: #dbeafe; color: #1d4ed8; }
         .badge-green { background: #dcfce7; color: #15803d; }
@@ -104,20 +245,203 @@
         .badge-gray { background: #f3f4f6; color: #4b5563; }
         .badge-orange { background: #fff7ed; color: #c2410c; }
         .badge-purple { background: #f3e8ff; color: #7c3aed; }
+
+        /* ── Progress Bar ── */
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: rgba(0,0,0,0.06);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            border-radius: 2px;
+            transition: width 0.4s ease;
+        }
+
+        /* ── Avatars ── */
+        .avatar {
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+
+        /* ── Toast ── */
+        .toast {
+            position: fixed;
+            bottom: calc(80px + var(--safe-bottom));
+            left: 16px;
+            right: 16px;
+            background: rgba(0,0,0,0.85);
+            color: #fff;
+            padding: 12px 18px;
+            border-radius: 14px;
+            font-size: 14px;
+            font-weight: 500;
+            text-align: center;
+            z-index: 200;
+            opacity: 0;
+            transform: translateY(20px);
+            transition: opacity 0.25s, transform 0.25s;
+            pointer-events: none;
+            backdrop-filter: blur(10px);
+        }
+        .toast.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* ── Skeleton Loading ── */
+        .skeleton {
+            background: linear-gradient(90deg, var(--tg-secondary-bg) 25%, rgba(0,0,0,0.04) 50%, var(--tg-secondary-bg) 75%);
+            background-size: 200% 100%;
+            animation: skeleton-shimmer 1.5s infinite;
+            border-radius: 8px;
+        }
+        @keyframes skeleton-shimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+
+        /* ── Pull-to-refresh ── */
+        .ptr-indicator {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 0;
+            overflow: hidden;
+            transition: height 0.2s;
+        }
+        .ptr-indicator.refreshing {
+            height: 44px;
+        }
+        .ptr-spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--tg-secondary-bg);
+            border-top-color: var(--tg-button);
+            border-radius: 50%;
+            animation: ptr-spin 0.6s linear infinite;
+        }
+        @keyframes ptr-spin { to { transform: rotate(360deg); } }
+
+        /* ── Empty State ── */
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 32px 16px;
+            text-align: center;
+            color: var(--tg-hint);
+        }
+        .empty-state .empty-icon { font-size: 40px; margin-bottom: 8px; opacity: 0.5; }
+        .empty-state .empty-text { font-size: 13px; line-height: 1.5; }
+
+        /* ── List Item ── */
+        .list-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            border-radius: 12px;
+            background: var(--tg-secondary-bg);
+            margin-bottom: 6px;
+            cursor: pointer;
+            transition: opacity 0.15s;
+            position: relative;
+        }
+        .list-item:active { opacity: 0.7; }
+
+        /* ── Truncate ── */
         .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .hidden { display: none !important; }
+
+        /* ── Stats Grid ── */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+        }
+        .stat-card {
+            background: var(--tg-secondary-bg);
+            border-radius: 14px;
+            padding: 14px 8px;
+            text-align: center;
+        }
+        .stat-card .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+        .stat-card .stat-label {
+            font-size: 11px;
+            color: var(--tg-hint);
+            margin-top: 2px;
+        }
+
+        /* ── Checkbox ── */
+        .checkbox-custom {
+            width: 22px;
+            height: 22px;
+            border: 2px solid rgba(0,0,0,0.2);
+            border-radius: 6px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s;
+            cursor: pointer;
+        }
+        .checkbox-custom.checked {
+            background: var(--tg-button);
+            border-color: var(--tg-button);
+        }
+        .checkbox-custom.checked::after {
+            content: '✓';
+            color: #fff;
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        /* ── Safe Area Padding ── */
+        .px-safe { padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
+
+        /* ── Scrollbar ── */
+        ::-webkit-scrollbar { width: 0; height: 0; }
+
+        /* ── Date input fix for iOS ── */
+        input[type="date"] {
+            -webkit-appearance: none;
+            min-height: 48px;
+        }
     </style>
 </head>
-<body class="min-h-screen">
+<body>
 
-    <div id="app" class="max-w-lg mx-auto px-3 pt-3">
+    <!-- Toast -->
+    <div id="toast" class="toast"></div>
+
+    <!-- Pull to Refresh Indicator -->
+    <div id="ptr-indicator" class="ptr-indicator">
+        <div class="ptr-spinner"></div>
+    </div>
+
+    <div id="app" class="max-w-lg mx-auto px-3 pt-3 px-safe">
         <!-- Header -->
-        <header class="flex items-center justify-between mb-3 px-1">
+        <header class="flex items-center justify-between mb-4 px-1">
             <div>
-                <h1 class="text-lg font-bold" style="color: var(--tg-text)">🤖 TG Media Downloader</h1>
-                <p class="text-xs" style="color: var(--tg-hint)">Telegram Media Management</p>
+                <h1 class="text-lg font-bold" style="color: var(--tg-text)">🤖 TG Downloader</h1>
+                <p class="text-xs" style="color: var(--tg-hint)">Media Management</p>
             </div>
-            <div id="stats-mini" class="flex gap-2 text-xs">
+            <div id="stats-mini" class="flex gap-1.5 text-xs">
                 <span class="badge badge-blue" id="s-queue">⏳0</span>
                 <span class="badge badge-green" id="s-active">📥0</span>
             </div>
@@ -127,49 +451,57 @@
         <div id="tab-dashboard" class="tab-content active">
             <!-- Account -->
             <div class="card">
-                <h3 class="font-semibold text-sm mb-2" style="color: var(--tg-hint)">🔑 账号</h3>
+                <div class="card-header">
+                    <span class="card-title">🔑 账号</span>
+                </div>
                 <div id="dash-user" class="flex items-center gap-3">
-                    <div class="w-10 h-10 rounded-full flex items-center justify-center text-lg font-bold" style="background: var(--tg-button); color: var(--tg-button-text)" id="dash-avatar">?</div>
+                    <div class="avatar" style="background: var(--tg-button); color: var(--tg-button-text)" id="dash-avatar">?</div>
                     <div>
                         <div class="font-semibold text-sm" id="dash-name">--</div>
                         <div class="text-xs" style="color: var(--tg-hint)" id="dash-username">--</div>
                     </div>
                 </div>
                 <div id="dash-no-login" class="hidden">
-                    <p class="text-sm" style="color: var(--tg-hint)">⚠️ 未登录，请在 Bot 中发送 /login</p>
+                    <div class="flex items-center gap-3 p-3 rounded-xl" style="background: #fef3c7;">
+                        <span class="text-xl">⚠️</span>
+                        <p class="text-sm" style="color: #92400e;">未登录，请在 Bot 中发送 /login</p>
+                    </div>
                 </div>
             </div>
 
             <!-- Channels -->
             <div class="card">
-                <div class="flex justify-between items-center mb-2">
-                    <h3 class="font-semibold text-sm" style="color: var(--tg-hint)">📺 频道</h3>
-                    <button onclick="loadChannels()" class="text-xs underline" style="color: var(--tg-button)">刷新</button>
+                <div class="card-header">
+                    <span class="card-title">📺 频道</span>
+                    <button onclick="loadChannels()" class="btn btn-xs btn-outline">刷新</button>
                 </div>
-                <div id="channel-list" class="space-y-1 mb-3 max-h-40 overflow-y-auto text-sm">
-                    <p style="color: var(--tg-hint)">加载中...</p>
+                <div id="channel-list" class="space-y-1 mb-3 max-h-44 overflow-y-auto text-sm">
+                    <div class="skeleton h-10 w-full mb-1"></div>
+                    <div class="skeleton h-10 w-full mb-1"></div>
                 </div>
                 <div class="flex gap-2">
-                    <input type="text" id="new-channel" placeholder="@username 或链接" class="input-field flex-1">
-                    <button onclick="connectChannel()" class="btn-primary btn-sm" style="width:auto">连接</button>
+                    <input type="text" id="new-channel" placeholder="@username 或链接" class="input-field flex-1" autocomplete="off" enterkeyhint="go">
+                    <button onclick="connectChannel()" class="btn btn-sm btn-primary" style="width:auto;flex-shrink:0" id="btn-connect">连接</button>
                 </div>
             </div>
 
             <!-- Quick Stats -->
             <div class="card">
-                <h3 class="font-semibold text-sm mb-2" style="color: var(--tg-hint)">📊 统计</h3>
-                <div class="grid grid-cols-3 gap-2 text-center text-sm">
-                    <div class="p-2 rounded-lg" style="background: var(--tg-secondary-bg)">
-                        <div class="font-bold text-lg" id="dash-queue">0</div>
-                        <div class="text-xs" style="color: var(--tg-hint)">排队中</div>
+                <div class="card-header">
+                    <span class="card-title">📊 统计</span>
+                </div>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value" style="color: #3b82f6" id="dash-queue">0</div>
+                        <div class="stat-label">排队中</div>
                     </div>
-                    <div class="p-2 rounded-lg" style="background: var(--tg-secondary-bg)">
-                        <div class="font-bold text-lg" id="dash-active">0</div>
-                        <div class="text-xs" style="color: var(--tg-hint)">下载中</div>
+                    <div class="stat-card">
+                        <div class="stat-value" style="color: #22c55e" id="dash-active">0</div>
+                        <div class="stat-label">下载中</div>
                     </div>
-                    <div class="p-2 rounded-lg" style="background: var(--tg-secondary-bg)">
-                        <div class="font-bold text-lg" id="dash-total">0</div>
-                        <div class="text-xs" style="color: var(--tg-hint)">已完成</div>
+                    <div class="stat-card">
+                        <div class="stat-value" style="color: #8b5cf6" id="dash-total">0</div>
+                        <div class="stat-label">已完成</div>
                     </div>
                 </div>
             </div>
@@ -178,41 +510,39 @@
         <!-- ===== TAB: Search ===== -->
         <div id="tab-search" class="tab-content">
             <div class="card">
-                <h3 class="font-semibold text-sm mb-2" style="color: var(--tg-hint)">🔍 搜索频道媒体</h3>
-                <div class="space-y-2">
-                    <input type="text" id="search-keyword" placeholder="关键词..." class="input-field">
+                <div class="card-header">
+                    <span class="card-title">🔍 搜索频道媒体</span>
+                </div>
+                <div class="space-y-2.5">
+                    <input type="text" id="search-keyword" placeholder="输入关键词..." class="input-field" enterkeyhint="search" onkeydown="if(event.key==='Enter')searchKeyword()">
+                    <select id="search-media-type" class="input-field">
+                        <option value="">全部类型</option>
+                        <option value="video">🎬 视频</option>
+                        <option value="photo">🖼️ 图片</option>
+                        <option value="document">📄 文档</option>
+                        <option value="audio">🎵 音频</option>
+                        <option value="animation">🎞️ GIF</option>
+                    </select>
                     <div class="flex gap-2">
-                        <select id="search-media-type" class="input-field flex-1">
-                            <option value="">全部类型</option>
-                            <option value="video">视频</option>
-                            <option value="photo">图片</option>
-                            <option value="document">文档</option>
-                            <option value="audio">音频</option>
-                            <option value="animation">GIF</option>
-                        </select>
+                        <input type="date" id="search-start" class="input-field flex-1" placeholder="开始日期">
+                        <input type="date" id="search-end" class="input-field flex-1" placeholder="结束日期">
                     </div>
                     <div class="flex gap-2">
-                        <input type="date" id="search-start" class="input-field flex-1">
-                        <input type="date" id="search-end" class="input-field flex-1">
+                        <button onclick="searchKeyword()" class="btn btn-primary flex-1">🔍 关键词</button>
+                        <button onclick="searchRecent()" class="btn btn-outline flex-1">🕐 最近</button>
                     </div>
-                    <div class="flex gap-2">
-                        <button onclick="searchKeyword()" class="btn-primary flex-1">🔍 关键词</button>
-                        <button onclick="searchRecent()" class="btn-secondary flex-1">🕐 最近</button>
-                    </div>
-                    <button onclick="searchTime()" class="btn-secondary">📅 按日期搜索</button>
+                    <button onclick="searchTime()" class="btn btn-secondary">📅 按日期搜索</button>
                 </div>
             </div>
 
             <!-- Results -->
             <div id="search-results-container" class="hidden">
                 <div class="card">
-                    <div class="flex justify-between items-center mb-2">
-                        <span class="font-semibold text-sm">
-                            结果 (<span id="results-count">0</span>)
-                        </span>
-                        <div class="flex gap-1">
-                            <button onclick="selectAllResults()" class="btn-sm btn-secondary">全选</button>
-                            <button onclick="downloadSelected()" class="btn-sm btn-primary">下载</button>
+                    <div class="card-header">
+                        <span class="card-title">结果 (<span id="results-count">0</span>)</span>
+                        <div class="flex gap-1.5">
+                            <button onclick="selectAllResults()" class="btn btn-xs btn-secondary">全选</button>
+                            <button onclick="downloadSelected()" class="btn btn-xs btn-primary">下载选中</button>
                         </div>
                     </div>
                     <div id="search-results-list" class="space-y-1 max-h-96 overflow-y-auto">
@@ -225,15 +555,18 @@
         <!-- ===== TAB: Queue ===== -->
         <div id="tab-queue" class="tab-content">
             <div class="card">
-                <div class="flex justify-between items-center mb-2">
-                    <h3 class="font-semibold text-sm" style="color: var(--tg-hint)">📥 下载队列</h3>
-                    <div class="flex gap-1">
-                        <button onclick="retryFailed()" class="btn-sm btn-secondary" style="background:#fff7ed;color:#c2410c;border-color:#fed7aa">重试失败</button>
-                        <button onclick="clearQueue()" class="btn-sm btn-danger">清空</button>
+                <div class="card-header">
+                    <span class="card-title">📥 下载队列</span>
+                    <div class="flex gap-1.5">
+                        <button onclick="retryFailed()" class="btn btn-xs" style="background:#fff7ed;color:#c2410c;">重试失败</button>
+                        <button onclick="clearQueue()" class="btn btn-xs btn-danger">清空</button>
                     </div>
                 </div>
                 <div id="queue-list" class="space-y-2 max-h-96 overflow-y-auto">
-                    <p style="color: var(--tg-hint)" class="text-sm text-center py-4">队列为空</p>
+                    <div class="empty-state">
+                        <div class="empty-icon">📭</div>
+                        <div class="empty-text">队列为空</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -242,33 +575,37 @@
         <div id="tab-storage" class="tab-content">
             <!-- Local Files -->
             <div class="card">
-                <div class="flex justify-between items-center mb-2">
-                    <h3 class="font-semibold text-sm" style="color: var(--tg-hint)">📂 本地文件</h3>
-                    <div class="flex gap-1">
+                <div class="card-header">
+                    <span class="card-title">📂 本地文件</span>
+                    <div class="flex gap-1.5 items-center">
                         <span id="storage-summary" class="text-xs" style="color: var(--tg-hint)"></span>
-                        <button onclick="clearStorage()" class="btn-sm btn-danger">清空</button>
+                        <button onclick="clearStorage()" class="btn btn-xs btn-danger">清空</button>
                     </div>
                 </div>
-                <div id="storage-list" class="space-y-1 max-h-64 overflow-y-auto text-sm">
-                    <p style="color: var(--tg-hint)" class="text-center py-4">加载中...</p>
+                <div id="storage-list" class="space-y-1 max-h-56 overflow-y-auto text-sm">
+                    <div class="skeleton h-10 w-full mb-1"></div>
+                    <div class="skeleton h-10 w-full mb-1"></div>
+                    <div class="skeleton h-10 w-full mb-1"></div>
                 </div>
             </div>
 
             <!-- History -->
             <div class="card">
-                <div class="flex justify-between items-center mb-2">
-                    <h3 class="font-semibold text-sm" style="color: var(--tg-hint)">📜 下载历史</h3>
-                    <button onclick="clearHistory()" class="btn-sm btn-danger">清空</button>
+                <div class="card-header">
+                    <span class="card-title">📜 下载历史</span>
+                    <button onclick="clearHistory()" class="btn btn-xs btn-danger">清空</button>
                 </div>
-                <div id="history-list" class="space-y-1 max-h-64 overflow-y-auto text-sm">
-                    <p style="color: var(--tg-hint)" class="text-center py-4">加载中...</p>
+                <div id="history-list" class="space-y-1 max-h-56 overflow-y-auto text-sm">
+                    <div class="skeleton h-12 w-full mb-1"></div>
+                    <div class="skeleton h-12 w-full mb-1"></div>
+                    <div class="skeleton h-12 w-full mb-1"></div>
                 </div>
             </div>
         </div>
     </div>
 
     <!-- Bottom Tab Bar -->
-    <nav class="fixed bottom-0 left-0 right-0 flex border-t" style="background: var(--tg-section-bg); border-color: #e5e7eb; z-index: 50;">
+    <nav class="bottom-tab-bar">
         <button class="bottom-tab active" data-tab="dashboard" onclick="switchTab('dashboard')">
             <span class="tab-icon">🏠</span>总览
         </button>
@@ -277,6 +614,7 @@
         </button>
         <button class="bottom-tab" data-tab="queue" onclick="switchTab('queue')">
             <span class="tab-icon">📥</span>队列
+            <span class="tab-badge hidden" id="queue-badge">0</span>
         </button>
         <button class="bottom-tab" data-tab="storage" onclick="switchTab('storage')">
             <span class="tab-icon">📂</span>文件
@@ -288,23 +626,10 @@
         const tg = window.Telegram ? window.Telegram.WebApp : null;
         if (tg) {
             tg.ready();
-            tg.expand(); // Expand to full height
+            tg.expand();
 
-            // Apply Telegram theme colors
-            const tp = tg.themeParams;
             const root = document.documentElement.style;
-            root.setProperty('--tg-bg', tp.bg_color || '#ffffff');
-            root.setProperty('--tg-text', tp.text_color || '#000000');
-            root.setProperty('--tg-hint', tp.hint_color || '#999999');
-            root.setProperty('--tg-button', tp.button_color || '#3b82f6');
-            root.setProperty('--tg-button-text', tp.button_text_color || '#ffffff');
-            root.setProperty('--tg-secondary-bg', tp.secondary_bg_color || '#f3f4f6');
-            root.setProperty('--tg-section-bg', tp.section_bg_color || (tp.bg_color || '#ffffff'));
-            root.setProperty('--tg-destructive', tp.destructive_text_color || '#ef4444');
-
-            // Listen for theme changes (day/night mode switch)
-            tg.onEvent('themeChanged', () => {
-                const p = tg.themeParams;
+            function applyTheme(p) {
                 root.setProperty('--tg-bg', p.bg_color || '#ffffff');
                 root.setProperty('--tg-text', p.text_color || '#000000');
                 root.setProperty('--tg-hint', p.hint_color || '#999999');
@@ -312,60 +637,62 @@
                 root.setProperty('--tg-button-text', p.button_text_color || '#ffffff');
                 root.setProperty('--tg-secondary-bg', p.secondary_bg_color || '#f3f4f6');
                 root.setProperty('--tg-section-bg', p.section_bg_color || (p.bg_color || '#ffffff'));
-            });
-
-            // BackButton handler
+                root.setProperty('--tg-destructive', p.destructive_text_color || '#ef4444');
+            }
+            applyTheme(tg.themeParams);
+            tg.onEvent('themeChanged', () => applyTheme(tg.themeParams));
             tg.BackButton.onClick(() => {
-                if (document.querySelector('.sub-page.active')) {
-                    closeSubPage();
-                }
+                if (document.querySelector('.sub-page.active')) closeSubPage();
             });
         }
 
+        // ── Haptic ──
         function haptic(kind = 'light') {
             try { tg && tg.HapticFeedback && tg.HapticFeedback.impactOccurred(kind); } catch(e) {}
         }
 
-        async function showAlert(msg) {
-            if (tg && tg.showAlert) {
-                return tg.showAlert(msg);
-            }
-            return alert(msg);
+        // ── Toast ──
+        let toastTimer;
+        function showToast(msg, duration = 2000) {
+            const el = document.getElementById('toast');
+            el.textContent = msg;
+            el.classList.add('show');
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => el.classList.remove('show'), duration);
         }
 
+        // ── Alert / Confirm ──
+        async function showAlert(msg) {
+            if (tg && tg.showAlert) return tg.showAlert(msg);
+            return alert(msg);
+        }
         async function showConfirm(msg) {
             if (tg && tg.showPopup) {
                 return new Promise((resolve) => {
-                    tg.showPopup({
-                        message: msg,
-                        buttons: [
-                            { id: 'cancel', type: 'cancel', text: '取消' },
-                            { id: 'ok', type: 'ok', text: '确认' },
-                        ]
-                    }, (btnId) => resolve(btnId === 'ok'));
+                    tg.showPopup({ message: msg, buttons: [
+                        { id: 'cancel', type: 'cancel', text: '取消' },
+                        { id: 'ok', type: 'ok', text: '确认' }
+                    ]}, (btnId) => resolve(btnId === 'ok'));
                 });
             }
             return confirm(msg);
         }
 
-        // ── API Helper ──────────────────────────────────────────
+        // ── API Helper ──
         async function fetchApi(path, options = {}) {
             const headers = { 'Content-Type': 'application/json', ...options.headers };
-            // Mini App: send initData for auth
-            if (tg && tg.initData) {
-                headers['X-Telegram-Init-Data'] = tg.initData;
-            }
-
+            if (tg && tg.initData) headers['X-Telegram-Init-Data'] = tg.initData;
             const res = await fetch('/api' + path, { ...options, headers });
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || 'API Error');
             return data;
         }
 
-        // ── Tabs ────────────────────────────────────────────────
+        // ── Tabs ──
         let currentTab = 'dashboard';
 
         function switchTab(tab) {
+            if (currentTab === tab) return;
             currentTab = tab;
             document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
             document.querySelectorAll('.bottom-tab').forEach(el => el.classList.remove('active'));
@@ -373,15 +700,17 @@
             if (contentEl) contentEl.classList.add('active');
             const btnEl = document.querySelector(`[data-tab="${tab}"]`);
             if (btnEl) btnEl.classList.add('active');
-
             haptic('light');
 
             if (tab === 'dashboard') { updateStats(); loadChannels(); checkLogin(); }
-            if (tab === 'queue') { updateStats(); }
+            if (tab === 'queue') { loadQueue(); updateStats(); }
             if (tab === 'storage') { loadStorage(); loadHistory(); }
+
+            // Scroll to top
+            window.scrollTo({ top: 0, behavior: 'smooth' });
         }
 
-        // ── Stats ───────────────────────────────────────────────
+        // ── Stats ──
         async function updateStats() {
             try {
                 const stats = await fetchApi('/stats');
@@ -390,44 +719,59 @@
                 document.getElementById('dash-queue').innerText = stats.queued_tasks;
                 document.getElementById('dash-active').innerText = stats.active_tasks;
                 document.getElementById('dash-total').innerText = stats.total_downloads;
+
+                // Queue badge
+                const badge = document.getElementById('queue-badge');
+                if (stats.queued_tasks > 0) {
+                    badge.classList.remove('hidden');
+                    badge.textContent = stats.queued_tasks > 99 ? '99+' : stats.queued_tasks;
+                } else {
+                    badge.classList.add('hidden');
+                }
             } catch(e) { console.error('Stats error:', e); }
         }
 
-        // ── Account ─────────────────────────────────────────────
+        // ── Account ──
         async function checkLogin() {
             try {
                 const me = await fetchApi('/me');
+                const userEl = document.getElementById('dash-user');
+                const noLoginEl = document.getElementById('dash-no-login');
                 if (me.logged_in) {
-                    document.getElementById('dash-no-login').classList.add('hidden');
-                    document.getElementById('dash-user').classList.remove('hidden');
+                    noLoginEl.classList.add('hidden');
+                    userEl.classList.remove('hidden');
                     document.getElementById('dash-name').innerText = (me.first_name || '') + ' ' + (me.last_name || '');
                     document.getElementById('dash-username').innerText = me.username ? '@' + me.username : (me.phone || '');
                     const initial = me.first_name ? me.first_name[0].toUpperCase() : '?';
-                    document.getElementById('dash-avatar').innerText = initial;
+                    const avatarEl = document.getElementById('dash-avatar');
                     if (me.avatar_url) {
-                        document.getElementById('dash-avatar').innerHTML = `<img src="${me.avatar_url}" class="w-full h-full rounded-full object-cover">`;
+                        avatarEl.innerHTML = `<img src="${me.avatar_url}" class="w-full h-full rounded-full object-cover">`;
+                    } else {
+                        avatarEl.innerText = initial;
+                        avatarEl.innerHTML = initial;
                     }
                 } else {
-                    document.getElementById('dash-user').classList.add('hidden');
-                    document.getElementById('dash-no-login').classList.remove('hidden');
+                    userEl.classList.add('hidden');
+                    noLoginEl.classList.remove('hidden');
                 }
             } catch(e) { console.error('Login check error:', e); }
         }
 
-        // ── Channels ────────────────────────────────────────────
+        // ── Channels ──
         async function loadChannels() {
             try {
                 const channels = await fetchApi('/channels');
                 const list = document.getElementById('channel-list');
                 if (!channels.length) {
-                    list.innerHTML = '<p class="text-sm text-center py-2" style="color: var(--tg-hint)">暂无频道，请连接</p>';
+                    list.innerHTML = '<div class="empty-state"><div class="empty-icon">📡</div><div class="empty-text">暂无频道，请连接</div></div>';
                     return;
                 }
                 list.innerHTML = channels.map(c => `
-                    <div class="flex justify-between items-center p-2 rounded-lg text-sm" style="background: var(--tg-secondary-bg)">
-                        <div>
-                            <b>${c.title}</b>
-                            <div class="text-xs" style="color: var(--tg-hint)">@${c.username || 'N/A'} | ${c.channel_id}</div>
+                    <div class="list-item">
+                        <div class="avatar" style="background: var(--tg-button); color: var(--tg-button-text); font-size:14px; width:36px; height:36px">${c.title[0]}</div>
+                        <div class="flex-1 min-w-0">
+                            <div class="font-semibold text-sm truncate">${c.title}</div>
+                            <div class="text-xs" style="color: var(--tg-hint)">@${c.username || 'N/A'}</div>
                         </div>
                     </div>
                 `).join('');
@@ -438,18 +782,20 @@
             const input = document.getElementById('new-channel');
             const id = input.value.trim();
             if (!id) return;
-            haptic('light');
+            haptic('medium');
+            const btn = document.getElementById('btn-connect');
+            btn.disabled = true;
+            btn.textContent = '...';
             try {
-                await fetchApi('/channels/connect', {
-                    method: 'POST', body: JSON.stringify({ identifier: id })
-                });
+                await fetchApi('/channels/connect', { method: 'POST', body: JSON.stringify({ identifier: id }) });
                 input.value = '';
                 loadChannels();
-                await showAlert('频道已连接');
-            } catch(e) { await showAlert('连接失败: ' + e.message); }
+                showToast('✅ 频道已连接');
+            } catch(e) { showToast('❌ ' + e.message); }
+            finally { btn.disabled = false; btn.textContent = '连接'; }
         }
 
-        // ── Search ──────────────────────────────────────────────
+        // ── Search ──
         let currentResults = [];
 
         async function searchRecent() {
@@ -457,40 +803,37 @@
             const mediaType = document.getElementById('search-media-type').value;
             try {
                 const data = await fetchApi('/search/recent', {
-                    method: 'POST',
-                    body: JSON.stringify({ limit: 200, media_type: mediaType })
+                    method: 'POST', body: JSON.stringify({ limit: 200, media_type: mediaType })
                 });
                 renderResults(data);
-            } catch(e) { await showAlert('搜索失败: ' + e.message); }
+            } catch(e) { showToast('❌ 搜索失败: ' + e.message); }
         }
 
         async function searchKeyword() {
             const kw = document.getElementById('search-keyword').value.trim();
-            if (!kw) return;
+            if (!kw) { showToast('请输入关键词'); return; }
             haptic('light');
             const mediaType = document.getElementById('search-media-type').value;
             try {
                 const data = await fetchApi('/search/keyword', {
-                    method: 'POST',
-                    body: JSON.stringify({ keyword: kw, limit: 200, media_type: mediaType })
+                    method: 'POST', body: JSON.stringify({ keyword: kw, limit: 200, media_type: mediaType })
                 });
                 renderResults(data);
-            } catch(e) { await showAlert('搜索失败: ' + e.message); }
+            } catch(e) { showToast('❌ 搜索失败: ' + e.message); }
         }
 
         async function searchTime() {
             const start = document.getElementById('search-start').value;
             const end = document.getElementById('search-end').value;
-            if (!start || !end) { await showAlert('请选择开始和结束日期'); return; }
+            if (!start || !end) { showToast('请选择开始和结束日期'); return; }
             haptic('light');
             const mediaType = document.getElementById('search-media-type').value;
             try {
                 const data = await fetchApi('/search/time', {
-                    method: 'POST',
-                    body: JSON.stringify({ start_date: start, end_date: end, limit: 200, media_type: mediaType })
+                    method: 'POST', body: JSON.stringify({ start_date: start, end_date: end, limit: 200, media_type: mediaType })
                 });
                 renderResults(data);
-            } catch(e) { await showAlert('搜索失败: ' + e.message); }
+            } catch(e) { showToast('❌ 搜索失败: ' + e.message); }
         }
 
         function formatSize(bytes) {
@@ -503,12 +846,13 @@
 
         function renderResults(messages) {
             currentResults = messages;
-            document.getElementById('search-results-container').classList.remove('hidden');
+            const container = document.getElementById('search-results-container');
+            container.classList.remove('hidden');
             document.getElementById('results-count').innerText = messages.length;
 
             const list = document.getElementById('search-results-list');
             if (!messages.length) {
-                list.innerHTML = '<p class="text-sm text-center py-4" style="color: var(--tg-hint)">无结果</p>';
+                list.innerHTML = '<div class="empty-state"><div class="empty-icon">🔎</div><div class="empty-text">无匹配结果</div></div>';
                 return;
             }
             list.innerHTML = messages.map(m => {
@@ -516,46 +860,51 @@
                                   m.media_type === 'photo' ? 'badge-green' :
                                   m.media_type === 'audio' ? 'badge-purple' : 'badge-gray';
                 const size = formatSize(m.file_size);
+                const name = m.file_name || (m.text ? m.text.substring(0, 40) : 'media_' + m.id);
                 return `
-                <div class="flex items-center gap-2 p-2 rounded-lg text-sm" style="background: var(--tg-secondary-bg)">
-                    <input type="checkbox" class="result-check h-4 w-4" data-id="${m.id}" data-chat="${m.chat_id}">
+                <label class="list-item" style="cursor:pointer">
+                    <div class="checkbox-custom" id="cb-${m.id}"></div>
+                    <input type="checkbox" class="result-check hidden" data-id="${m.id}" data-chat="${m.chat_id}"
+                           onchange="toggleCheckbox('cb-${m.id}', this.checked)">
                     <div class="flex-1 min-w-0">
-                        <div class="truncate text-xs font-mono" title="${m.file_name || m.text}">${m.file_name || m.text?.substring(0,30) || 'media_' + m.id}</div>
-                        <div class="flex gap-1 items-center mt-0.5">
+                        <div class="truncate text-xs font-medium">${name}</div>
+                        <div class="flex gap-1.5 items-center mt-1">
                             <span class="badge ${typeBadge}">${m.media_type}</span>
                             <span class="text-xs" style="color: var(--tg-hint)">${size}</span>
                         </div>
                     </div>
-                </div>`;
+                </label>`;
             }).join('');
 
-            // Scroll to results
-            document.getElementById('search-results-container').scrollIntoView({ behavior: 'smooth' });
+            container.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function toggleCheckbox(cbId, checked) {
+            const cb = document.getElementById(cbId);
+            if (checked) cb.classList.add('checked');
+            else cb.classList.remove('checked');
         }
 
         function selectAllResults() {
             const all = document.querySelectorAll('.result-check');
             const anyUnchecked = Array.from(all).some(cb => !cb.checked);
-            all.forEach(cb => cb.checked = anyUnchecked);
+            all.forEach(cb => { cb.checked = anyUnchecked; cb.dispatchEvent(new Event('change')); });
             haptic('light');
         }
 
         async function downloadSelected() {
             const ids = Array.from(document.querySelectorAll('.result-check:checked'))
                 .map(el => parseInt(el.dataset.id));
-            if (!ids.length) { await showAlert('请先勾选要下载的文件'); return; }
+            if (!ids.length) { showToast('请先勾选要下载的文件'); return; }
             haptic('medium');
             try {
-                await fetchApi('/download/batch', {
-                    method: 'POST',
-                    body: JSON.stringify({ message_ids: ids })
-                });
-                await showAlert(`已添加 ${ids.length} 个任务到队列`);
+                await fetchApi('/download/batch', { method: 'POST', body: JSON.stringify({ message_ids: ids }) });
+                showToast(`✅ 已添加 ${ids.length} 个任务`);
                 updateStats();
-            } catch(e) { await showAlert('下载失败: ' + e.message); }
+            } catch(e) { showToast('❌ ' + e.message); }
         }
 
-        // ── Queue ────────────────────────────────────────────────
+        // ── Queue ──
         async function loadQueue() {
             try {
                 const queue = await fetchApi('/queue');
@@ -566,26 +915,34 @@
                 });
                 const list = document.getElementById('queue-list');
                 if (!queue.length) {
-                    list.innerHTML = '<p class="text-sm text-center py-4" style="color: var(--tg-hint)">队列为空</p>';
+                    list.innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-text">队列为空</div></div>';
                     return;
                 }
                 list.innerHTML = queue.map(t => {
                     const statusBadge = t.status === 'downloading' ? 'badge-blue' :
                                         t.status === 'failed' ? 'badge-red' :
                                         t.status === 'completed' ? 'badge-green' : 'badge-gray';
-                    const pgColor = t.status === 'failed' ? '#ef4444' : t.status === 'downloading' ? '#3b82f6' : '#9ca3af';
+                    const statusLabel = t.status === 'downloading' ? '下载中' :
+                                        t.status === 'failed' ? '失败' :
+                                        t.status === 'completed' ? '完成' : '排队';
+                    const pgColor = t.status === 'failed' ? '#ef4444' : t.status === 'downloading' ? '#3b82f6' : '#22c55e';
+                    const progressHtml = (t.status === 'downloading' || t.status === 'failed') ? `
+                        <div class="progress-bar mt-1.5">
+                            <div class="progress-bar-fill" style="width:${t.progress||0}%; background:${pgColor}"></div>
+                        </div>
+                        <div class="flex justify-between mt-0.5">
+                            <span class="text-xs" style="color: var(--tg-hint)">${t.progress||0}%</span>
+                        </div>` : '';
                     return `
-                    <div class="p-2 rounded-lg" style="background: var(--tg-secondary-bg)">
-                        <div class="flex justify-between items-center">
-                            <span class="text-xs truncate flex-1 mr-2 font-mono" title="${t.file_name}">${t.file_name}</span>
-                            <span class="badge ${statusBadge}">${t.status}</span>
-                            <button onclick="deleteTask('${t.task_id}')" class="ml-1 text-xs" style="color: var(--tg-destructive)">✕</button>
+                    <div class="p-3 rounded-xl" style="background: var(--tg-secondary-bg)">
+                        <div class="flex justify-between items-start gap-2">
+                            <span class="text-xs truncate flex-1 font-medium">${t.file_name}</span>
+                            <div class="flex items-center gap-1 flex-shrink-0">
+                                <span class="badge ${statusBadge}">${statusLabel}</span>
+                                <button onclick="deleteTask('${t.task_id}')" class="btn-icon" style="width:32px;height:32px;border-radius:8px;font-size:14px;">✕</button>
+                            </div>
                         </div>
-                        ${t.status === 'downloading' ? `
-                        <div class="mt-1 w-full rounded-full h-1" style="background: #e5e7eb">
-                            <div class="h-1 rounded-full transition-all" style="width:${t.progress||0}%; background:${pgColor}"></div>
-                        </div>
-                        <span class="text-xs" style="color: var(--tg-hint)">${t.progress||0}%</span>` : ''}
+                        ${progressHtml}
                     </div>`;
                 }).join('');
             } catch(e) { console.error('Queue error:', e); }
@@ -594,11 +951,10 @@
         async function deleteTask(taskId) {
             haptic('light');
             try {
-                await fetchApi('/queue/delete', {
-                    method: 'POST', body: JSON.stringify({ task_id: taskId })
-                });
+                await fetchApi('/queue/delete', { method: 'POST', body: JSON.stringify({ task_id: taskId }) });
                 loadQueue();
                 updateStats();
+                showToast('已删除');
             } catch(e) { console.error(e); }
         }
 
@@ -609,8 +965,8 @@
                 await fetchApi('/queue/clear', { method: 'POST' });
                 loadQueue();
                 updateStats();
-                await showAlert('队列已清空');
-            } catch(e) { await showAlert('失败: ' + e.message); }
+                showToast('✅ 队列已清空');
+            } catch(e) { showToast('❌ ' + e.message); }
         }
 
         async function retryFailed() {
@@ -619,29 +975,29 @@
                 await fetchApi('/queue/retry-failed', { method: 'POST' });
                 loadQueue();
                 updateStats();
-                await showAlert('已重试所有失败任务');
-            } catch(e) { await showAlert('失败: ' + e.message); }
+                showToast('✅ 已重试');
+            } catch(e) { showToast('❌ ' + e.message); }
         }
 
-        // ── Storage ──────────────────────────────────────────────
+        // ── Storage ──
         async function loadStorage() {
             try {
                 const data = await fetchApi('/storage/files');
-                document.getElementById('storage-summary').innerText = `${data.total_files} 个文件 · ${formatSize(data.total_size)}`;
+                document.getElementById('storage-summary').innerText = `${data.total_files} 个 · ${formatSize(data.total_size)}`;
                 const list = document.getElementById('storage-list');
                 if (!data.files.length) {
-                    list.innerHTML = '<p class="text-sm text-center py-4" style="color: var(--tg-hint)">无本地文件</p>';
+                    list.innerHTML = '<div class="empty-state"><div class="empty-icon">📂</div><div class="empty-text">无本地文件</div></div>';
                     return;
                 }
                 list.innerHTML = data.files.map(f => {
                     const delBadge = f.is_del_marked ? ' <span class="badge badge-red">待删</span>' : '';
                     return `
-                    <div class="flex items-center justify-between p-2 rounded-lg text-xs" style="background: var(--tg-secondary-bg)">
-                        <div class="truncate flex-1 mr-2 font-mono" title="${f.name}">${f.name}${delBadge}</div>
-                        <div class="flex items-center gap-1">
-                            <span style="color: var(--tg-hint)">${f.size_formatted}</span>
-                            <button onclick="deleteStorageFile('${f.name.replace(/'/g, "\\'")}')" class="text-xs" style="color: var(--tg-destructive)">✕</button>
+                    <div class="list-item" style="cursor:default">
+                        <div class="flex-1 min-w-0">
+                            <div class="truncate text-xs font-medium">${f.name}${delBadge}</div>
+                            <div class="text-xs" style="color: var(--tg-hint)">${f.size_formatted}</div>
                         </div>
+                        <button onclick="deleteStorageFile('${f.name.replace(/'/g, "\\'")}')" class="btn-icon" style="width:32px;height:32px;border-radius:8px;font-size:14px;color:var(--tg-destructive)">🗑</button>
                     </div>`;
                 }).join('');
             } catch(e) { console.error('Storage error:', e); }
@@ -651,11 +1007,10 @@
             if (!await showConfirm(`删除 "${name}"？`)) return;
             haptic('light');
             try {
-                await fetchApi('/storage/delete', {
-                    method: 'POST', body: JSON.stringify({ names: [name] })
-                });
+                await fetchApi('/storage/delete', { method: 'POST', body: JSON.stringify({ names: [name] }) });
                 loadStorage();
-            } catch(e) { await showAlert('删除失败: ' + e.message); }
+                showToast('已删除');
+            } catch(e) { showToast('❌ ' + e.message); }
         }
 
         async function clearStorage() {
@@ -664,24 +1019,28 @@
             try {
                 const res = await fetchApi('/storage/clear', { method: 'POST' });
                 loadStorage();
-                await showAlert(`已删除 ${res.deleted} 个文件，释放 ${res.freed_formatted}`);
-            } catch(e) { await showAlert('失败: ' + e.message); }
+                showToast(`✅ 已删除 ${res.deleted} 个文件，释放 ${res.freed_formatted}`);
+            } catch(e) { showToast('❌ ' + e.message); }
         }
 
-        // ── History ──────────────────────────────────────────────
+        // ── History ──
         async function loadHistory() {
             try {
                 const data = await fetchApi('/history?size=30');
                 const list = document.getElementById('history-list');
                 if (!data.items || !data.items.length) {
-                    list.innerHTML = '<p class="text-sm text-center py-4" style="color: var(--tg-hint)">无历史记录</p>';
+                    list.innerHTML = '<div class="empty-state"><div class="empty-icon">📜</div><div class="empty-text">无历史记录</div></div>';
                     return;
                 }
                 list.innerHTML = data.items.map(h => `
-                    <div class="p-2 rounded-lg text-xs" style="background: var(--tg-secondary-bg)">
+                    <div class="p-3 rounded-xl text-xs" style="background: var(--tg-secondary-bg)">
                         <div class="font-semibold truncate">${h.file_name}</div>
-                        <div style="color: var(--tg-hint)">
-                            ${formatSize(h.file_size || 0)} | ${h.media_type || 'unknown'} | ${new Date(h.downloaded_at || h.completed_at).toLocaleString('zh-CN')}
+                        <div class="flex gap-2 mt-0.5" style="color: var(--tg-hint)">
+                            <span>${formatSize(h.file_size || 0)}</span>
+                            <span>·</span>
+                            <span>${h.media_type || 'unknown'}</span>
+                            <span>·</span>
+                            <span>${new Date(h.downloaded_at || h.completed_at).toLocaleString('zh-CN')}</span>
                         </div>
                     </div>
                 `).join('');
@@ -694,11 +1053,11 @@
             try {
                 await fetchApi('/history/clear', { method: 'POST' });
                 loadHistory();
-                await showAlert('历史已清空');
-            } catch(e) { await showAlert('失败: ' + e.message); }
+                showToast('✅ 历史已清空');
+            } catch(e) { showToast('❌ ' + e.message); }
         }
 
-        // ── MainButton Setup ─────────────────────────────────────
+        // ── MainButton Setup ──
         let mainBtnVisible = false;
         function showMainButton(text, onClick) {
             if (!tg || !tg.MainButton) return;
@@ -706,14 +1065,13 @@
             tg.MainButton.onClick(onClick);
             if (!mainBtnVisible) { tg.MainButton.show(); mainBtnVisible = true; }
         }
-
         function hideMainButton() {
             if (!tg || !tg.MainButton) return;
             tg.MainButton.hide();
             mainBtnVisible = false;
         }
 
-        // Override tab switching to manage MainButton
+        // Override switchTab to manage MainButton
         const _origSwitchTab = switchTab;
         switchTab = function(tab) {
             hideMainButton();
@@ -721,22 +1079,27 @@
             if (tab === 'search' && currentResults.length > 0) {
                 showMainButton('📥 下载已选文件', downloadSelected);
             }
-            if (tab === 'queue') {
-                loadQueue();
-            }
+            if (tab === 'queue') loadQueue();
+            if (tab === 'dashboard') { updateStats(); loadChannels(); checkLogin(); }
+            if (tab === 'storage') { loadStorage(); loadHistory(); }
         };
 
-        // ── Init ──────────────────────────────────────────────────
+        // ── Init ──
         async function init() {
             updateStats();
             checkLogin();
             loadChannels();
 
-            // Refresh stats every 10 seconds
+            // Refresh stats every 15s
             setInterval(() => {
-                if (currentTab === 'dashboard') updateStats();
+                updateStats();
                 if (currentTab === 'queue') loadQueue();
-            }, 10000);
+            }, 15000);
+
+            // Enter key on channel input
+            document.getElementById('new-channel').addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') connectChannel();
+            });
         }
 
         init();
