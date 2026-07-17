@@ -56,7 +56,7 @@ def setup_handlers():
             mini_app_url = _get_mini_app_url()
             await bot(functions.bots.SetBotMenuButtonRequest(
                 user_id='',
-                button=types.BotMenuButtonWebApp(
+                button=types.BotMenuButton(
                     text='📊 管理面板',
                     url=mini_app_url,
                 ),
