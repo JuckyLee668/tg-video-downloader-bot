@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -19,6 +20,17 @@ class ExternalDownloader:
         if default_cookies.exists():
             self.cookies_file = str(default_cookies)
             logger.info(f"Found Twitter cookies file: {default_cookies}")
+
+    @staticmethod
+    def _has_ffmpeg() -> bool:
+        return shutil.which("ffmpeg") is not None
+
+    def _video_format(self) -> str:
+        """Choose best format; fall back to single stream when ffmpeg is absent."""
+        if self._has_ffmpeg():
+            return "bestvideo+bestaudio/best"
+        logger.warning("ffmpeg not found — falling back to single-stream 'best' format")
+        return "best"
 
     def _yt_opts(self, extra: dict = None) -> dict:
         """Build yt-dlp options, including cookies if available."""
@@ -48,7 +60,7 @@ class ExternalDownloader:
         def _extract():
             opts = self._yt_opts({
                 "extract_flat": False,
-                "format": "bestvideo+bestaudio/best",
+                "format": self._video_format(),
             })
             with yt_dlp.YoutubeDL(opts) as ydl:
                 return ydl.extract_info(url, download=False)
@@ -128,7 +140,7 @@ class ExternalDownloader:
         def _download():
             opts = self._yt_opts({
                 "outtmpl": outtmpl,
-                "format": "bestvideo+bestaudio/best",
+                "format": self._video_format(),
                 "progress_hooks": [_progress_hook],
                 "merge_output_format": "mp4",
                 "noplaylist": True,

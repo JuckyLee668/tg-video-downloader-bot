@@ -442,6 +442,14 @@ class DownloadManager:
                 ],
                 "nosound": False,
             }
+
+            # Download thumbnail for cover image on forward
+            thumb_url = ext_info.get("thumbnail", "") or ""
+            if thumb_url:
+                thumb_path = await self._download_external_thumb(thumb_url, task["task_id"])
+                if thumb_path:
+                    video_attrs["thumb"] = thumb_path
+
             self._video_attrs_cache[task["task_id"]] = video_attrs
 
         return actual_path
@@ -842,6 +850,28 @@ class DownloadManager:
                 return str(dest)
         except Exception as e:
             logger.debug(f"Failed to download thumb for task {task_id}: {e}")
+        return None
+
+    @staticmethod
+    async def _download_external_thumb(url: str, task_id: str) -> str | None:
+        """Download thumbnail image from a URL (e.g. Twitter video thumbnail).
+
+        Returns the path to the JPEG file, or None on failure.
+        """
+        try:
+            import httpx
+
+            thumb_dir = Path(config.save_path).parent / ".tg_thumbs"
+            thumb_dir.mkdir(parents=True, exist_ok=True)
+            dest = thumb_dir / f"thumb_{task_id}.jpg"
+
+            async with httpx.AsyncClient(timeout=15) as http:
+                resp = await http.get(url)
+                if resp.status_code == 200 and len(resp.content) > 0:
+                    dest.write_bytes(resp.content)
+                    return str(dest)
+        except Exception as e:
+            logger.debug(f"Failed to download external thumb for task {task_id}: {e}")
         return None
 
     def create_progress_callback(
