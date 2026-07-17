@@ -39,3 +39,31 @@ user_api:
   api_hash: ''
   api_id: ''
   proxy: null
+
+# 默认操作：收到媒体时自动执行（跳过交互询问）
+default_action:
+  enabled: false
+  action: download   # download / forward / cloud / all
+  target_chat: ''    # 转发目标 (forward/all 时使用)
+  delete_after_forward: false
+
+# 下载后自动转发到指定聊天
+local_forward:
+  enabled: false
+  target_chat: ''
+  delete_after_forward: false
+
+# 下载后智能重命名
+file_rename:
+  enabled: false
+  # 变量: {channel_title} {channel_username} {date} {time} {original_name} {ext}
+  pattern: '{channel_title}/{date}_{original_name}'
+
+# 文件去重
+file_dedup:
+  enabled: true
+  by_message_id: true
+  by_file_id: false
+
+# 下载进度推送通知
+progress_notification: true
