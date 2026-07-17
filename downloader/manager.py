@@ -79,11 +79,11 @@ class DownloadManager:
         while True:
             await self.queue.get()
             try:
-                while True:
-                    task = await db_manager.claim_next_task()
-                    if not task:
-                        break
+                task = await db_manager.claim_next_task()
+                if task:
                     await self.process_task(worker_id, task)
+                    # Wake another worker to claim the next pending task
+                    await self.queue.put("wake")
             finally:
                 self.queue.task_done()
 
