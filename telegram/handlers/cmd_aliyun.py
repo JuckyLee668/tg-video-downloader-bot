@@ -291,39 +291,85 @@ async def _show_status(event):
 
 
 async def _cmd_login_async(event):
-    """内联键盘版本：登录。使用 event.edit() 更新消息。"""
+    """内联键盘版本：登录。读取增量输出获取二维码链接。"""
     bin_path = _find_aliyunpan()
     if not bin_path:
         await event.edit("❌ aliyunpan CLI 未安装。\n请手动安装后重试。", buttons=_aliyun_keyboard())
         return
 
+    import re
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             bin_path, "login",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
-        output = stdout.decode("utf-8", errors="replace")
 
-        import re
-        urls = re.findall(r'https?://[^\s]+', output)
+        # 逐行读取输出，拿到登录 URL 后立即展示
+        output_lines = []
         qr_url = ""
-        for u in urls:
-            if "aliyundrive" in u or "qr" in u or "qrcode" in u:
-                qr_url = u
-                break
-        if not qr_url and urls:
-            qr_url = urls[0]
+        try:
+            while True:
+                line = await asyncio.wait_for(
+                    proc.stdout.readline(),
+                    timeout=10.0  # 每行最多等10秒
+                )
+                if not line:
+                    break
+                decoded = line.decode("utf-8", errors="replace").strip()
+                if decoded:
+                    output_lines.append(decoded)
+                    # 搜所有行中的链接
+                    all_text = "\n".join(output_lines)
+                    urls = re.findall(r'https?://[^\s\n]+', all_text)
+                    for u in urls:
+                        if "aliyundrive" in u or "qr" in u or "qrcode" in u or "login" in u.lower():
+                            qr_url = u
+                            break
+                    if not qr_url and urls:
+                        qr_url = urls[0]
+                    if qr_url:
+                        break
+        except asyncio.TimeoutError:
+            pass  # 10s内没新行，用已读取的内容
 
-        text = "🔑 **登录阿里云盘**\n\n"
+        # 清理进程
+        if proc.returncode is None:
+            try:
+                proc.terminate()
+                await asyncio.wait_for(proc.wait(), timeout=3)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
         if qr_url:
-            text += f"请打开链接扫码登录:\n`{qr_url}`\n\n"
-        text += "打开链接 → 扫码 → 确认登录即可。\n登录完成后再次点击状态按钮查看。"
-        await event.edit(text, buttons=_aliyun_keyboard())
-    except asyncio.TimeoutError:
-        await event.edit("⏱️ 登录超时。请重试。", buttons=_aliyun_keyboard())
+            text = (
+                "🔑 **登录阿里云盘**\n\n"
+                f"请打开以下链接扫码登录：\n"
+                f"[点此打开登录页面]({qr_url})\n\n"
+                "打开链接 → 扫码 → 确认登录即可。\n"
+                "登录完成后点击 **📊 状态** 按钮验证。"
+            )
+        else:
+            all_output = "\n".join(output_lines) if output_lines else "(无输出)"
+            text = (
+                "🔑 **登录阿里云盘**\n\n"
+                "未能获取登录二维码链接。\n"
+                "请通过 SSH 手动运行 `aliyunpan login` 登录。\n\n"
+                f"输出:\n`{all_output[:300]}`"
+            )
+
+        await event.edit(text, buttons=_aliyun_keyboard(), link_preview=True)
+
     except Exception as e:
+        if proc and proc.returncode is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
         await event.edit(f"❌ 登录失败: {e}", buttons=_aliyun_keyboard())
 
 
@@ -380,42 +426,65 @@ async def _cmd_tree_inline(event, path: str):
 
 
 async def _cmd_login(event):
-    """扫码登录。aliyunpan login 需要交互，生成二维码后用户需手动扫码。"""
+    """扫码登录。读取增量输出获取登录链接。"""
     bin_path = _find_aliyunpan()
     if not bin_path:
         await event.respond("❌ aliyunpan CLI 未安装。")
         return
 
     await event.respond("🔑 正在生成登录二维码...")
+    import re
 
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             bin_path, "login",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
-        output = stdout.decode("utf-8", errors="replace")
 
-        # 提取二维码 URL
-        import re
-        urls = re.findall(r'https?://[^\s]+', output)
+        output_lines = []
         qr_url = ""
-        for u in urls:
-            if "aliyundrive" in u or "qr" in u or "qrcode" in u:
-                qr_url = u
-                break
-        if not qr_url and urls:
-            qr_url = urls[0]
+        try:
+            while True:
+                line = await asyncio.wait_for(proc.stdout.readline(), timeout=10.0)
+                if not line:
+                    break
+                decoded = line.decode("utf-8", errors="replace").strip()
+                if decoded:
+                    output_lines.append(decoded)
+                    all_text = "\n".join(output_lines)
+                    urls = re.findall(r'https?://[^\s\n]+', all_text)
+                    for u in urls:
+                        if "aliyundrive" in u or "qr" in u or "qrcode" in u or "login" in u.lower():
+                            qr_url = u
+                            break
+                    if not qr_url and urls:
+                        qr_url = urls[0]
+                    if qr_url:
+                        break
+        except asyncio.TimeoutError:
+            pass
 
-        text = "🔑 **登录阿里云盘**\n\n"
+        if proc.returncode is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
         if qr_url:
-            text += f"请打开链接扫码登录:\n`{qr_url}`\n\n"
-        text += "打开链接 → 扫码 → 确认登录即可。\n登录完成后再次发送 `/aliyun` 查看状态。"
-        await event.respond(text)
-    except asyncio.TimeoutError:
-        await event.respond("⏱️ 登录超时。请重试 `/aliyun login`。")
+            text = f"🔑 **登录阿里云盘**\n\n请打开链接扫码:\n[点此打开登录页面]({qr_url})\n\n登录完成后发送 `/aliyun` 查看状态。"
+        else:
+            all_output = "\n".join(output_lines) if output_lines else "(无输出)"
+            text = f"🔑 **登录阿里云盘**\n\n未能获取登录链接。请通过 SSH 运行 `aliyunpan login`。\n\n输出:\n`{all_output[:300]}`"
+
+        await event.respond(text, link_preview=True)
     except Exception as e:
+        if proc and proc.returncode is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
         await event.respond(f"❌ 登录失败: {e}")
 
 
