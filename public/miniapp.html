@@ -422,6 +422,58 @@
             -webkit-appearance: none;
             min-height: 48px;
         }
+
+        /* ── Toggle Switch ── */
+        .toggle-switch {
+            position: relative;
+            width: 48px;
+            height: 28px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: #d1d5db;
+            border-radius: 14px;
+            cursor: pointer;
+            transition: background 0.2s;
+            flex-shrink: 0;
+        }
+        .toggle-switch:checked {
+            background: var(--tg-button);
+        }
+        .toggle-switch::before {
+            content: '';
+            position: absolute;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            top: 2px;
+            left: 2px;
+            background: white;
+            transition: transform 0.2s;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+        }
+        .toggle-switch:checked::before {
+            transform: translateX(20px);
+        }
+
+        /* ── Range Slider ── */
+        input[type="range"] {
+            width: 100%;
+            height: 6px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: var(--tg-secondary-bg);
+            border-radius: 3px;
+            outline: none;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: var(--tg-button);
+            cursor: pointer;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+        }
     </style>
 </head>
 <body>
@@ -602,6 +654,120 @@
                 </div>
             </div>
         </div>
+        <!-- ===== TAB: Settings ===== -->
+        <div id="tab-settings" class="tab-content">
+            <!-- Default Action -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">⚡ 默认操作</span>
+                </div>
+                <div class="space-y-3">
+                    <label class="flex items-center justify-between" style="min-height:44px">
+                        <span class="text-sm">自动执行</span>
+                        <input type="checkbox" id="setting-da-enabled" onchange="saveDefaultAction()" class="toggle-switch">
+                    </label>
+                    <div id="da-action-row">
+                        <label class="text-sm" style="color:var(--tg-hint)">操作类型</label>
+                        <select id="setting-da-action" onchange="saveDefaultAction()" class="input-field">
+                            <option value="download">📥 下载到本地</option>
+                            <option value="forward">📤 下载并转发</option>
+                            <option value="cloud">☁️ 下载并上传云盘</option>
+                            <option value="all">🔄 全部</option>
+                        </select>
+                    </div>
+                    <div id="da-target-row">
+                        <label class="text-sm" style="color:var(--tg-hint)">转发目标 (Chat ID 或 @username)</label>
+                        <input type="text" id="setting-da-target" placeholder="-100123456789 或 @channel"
+                               class="input-field" onblur="saveDefaultAction()" enterkeyhint="done">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Download Settings -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">📥 下载设置</span>
+                </div>
+                <div class="space-y-3">
+                    <div>
+                        <label class="text-sm" style="color:var(--tg-hint)">最大并发任务: <span id="max-tasks-val" class="font-bold" style="color:var(--tg-text)">3</span></label>
+                        <input type="range" id="setting-max-tasks" min="1" max="10" value="3"
+                               oninput="document.getElementById('max-tasks-val').textContent=this.value"
+                               onchange="saveDownloadSettings()">
+                    </div>
+                    <div>
+                        <label class="text-sm" style="color:var(--tg-hint)">媒体类型</label>
+                        <div id="media-types-checkboxes" class="flex flex-wrap gap-2 mt-1"></div>
+                    </div>
+                    <label class="flex items-center justify-between" style="min-height:44px">
+                        <span class="text-sm">自适应并发</span>
+                        <input type="checkbox" id="setting-adaptive" onchange="saveDownloadSettings()" class="toggle-switch">
+                    </label>
+                    <label class="flex items-center justify-between" style="min-height:44px">
+                        <span class="text-sm">总是重新下载</span>
+                        <input type="checkbox" id="setting-fresh" onchange="saveDownloadSettings()" class="toggle-switch">
+                    </label>
+                </div>
+            </div>
+
+            <!-- File Settings -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">📂 文件设置</span>
+                </div>
+                <div class="space-y-3">
+                    <label class="flex items-center justify-between" style="min-height:44px">
+                        <span class="text-sm">智能重命名</span>
+                        <input type="checkbox" id="setting-rename-enabled" onchange="saveFileSettings()" class="toggle-switch">
+                    </label>
+                    <div>
+                        <label class="text-sm" style="color:var(--tg-hint)">Pattern</label>
+                        <input type="text" id="setting-rename-pattern" placeholder="{channel_title}/{date}_{original_name}{ext}"
+                               class="input-field" onblur="saveFileSettings()" enterkeyhint="done">
+                        <p class="text-xs mt-1" style="color:var(--tg-hint)">变量: {channel_title} {channel_username} {date} {time} {original_name} {ext}</p>
+                    </div>
+                    <label class="flex items-center justify-between" style="min-height:44px">
+                        <span class="text-sm">文件去重</span>
+                        <input type="checkbox" id="setting-dedup-enabled" onchange="saveFileSettings()" class="toggle-switch">
+                    </label>
+                </div>
+            </div>
+
+            <!-- Notifications -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">🔔 通知</span>
+                </div>
+                <label class="flex items-center justify-between" style="min-height:44px">
+                    <span class="text-sm">下载进度推送</span>
+                    <input type="checkbox" id="setting-notification" onchange="saveNotificationSettings()" class="toggle-switch">
+                </label>
+            </div>
+
+            <!-- Aliyun Drive -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">☁️ 阿里云盘</span>
+                </div>
+                <div class="space-y-3">
+                    <label class="flex items-center justify-between" style="min-height:44px">
+                        <span class="text-sm">自动上传</span>
+                        <input type="checkbox" id="setting-aliyun-enabled" onchange="saveAliyunSettings()" class="toggle-switch">
+                    </label>
+                    <div>
+                        <label class="text-sm" style="color:var(--tg-hint)">上传目录</label>
+                        <input type="text" id="setting-aliyun-path" placeholder="/video"
+                               class="input-field" onblur="saveAliyunSettings()" enterkeyhint="done">
+                    </div>
+                    <label class="flex items-center justify-between" style="min-height:44px">
+                        <span class="text-sm">上传后删除本地</span>
+                        <input type="checkbox" id="setting-aliyun-delete" onchange="saveAliyunSettings()" class="toggle-switch">
+                    </label>
+                </div>
+            </div>
+
+            <div style="height:16px"></div>
+        </div>
     </div>
 
     <!-- Bottom Tab Bar -->
@@ -618,6 +784,9 @@
         </button>
         <button class="bottom-tab" data-tab="storage" onclick="switchTab('storage')">
             <span class="tab-icon">📂</span>文件
+        </button>
+        <button class="bottom-tab" data-tab="settings" onclick="switchTab('settings')">
+            <span class="tab-icon">⚙️</span>设置
         </button>
     </nav>
 
@@ -1071,6 +1240,163 @@
             mainBtnVisible = false;
         }
 
+        // ── Settings ──
+        async function loadSettings() {
+            try {
+                const data = await fetchApi('/config');
+
+                // Default Action
+                const da = data.default_action || {};
+                document.getElementById('setting-da-enabled').checked = da.enabled || false;
+                document.getElementById('setting-da-action').value = da.action || 'download';
+                document.getElementById('setting-da-target').value = da.target_chat || '';
+                toggleDaRows();
+
+                // Download
+                document.getElementById('setting-max-tasks').value = data.max_download_task || 3;
+                document.getElementById('max-tasks-val').textContent = data.max_download_task || 3;
+                document.getElementById('setting-adaptive').checked = data.adaptive_concurrency ?? true;
+                document.getElementById('setting-fresh').checked = data.always_fresh_download ?? false;
+                renderMediaTypes(data.media_types || []);
+
+                // File
+                document.getElementById('setting-rename-enabled').checked = (data.file_rename || {}).enabled || false;
+                document.getElementById('setting-rename-pattern').value = (data.file_rename || {}).pattern || '';
+                document.getElementById('setting-dedup-enabled').checked = (data.file_dedup || {}).enabled ?? true;
+
+                // Notification
+                document.getElementById('setting-notification').checked = data.progress_notification ?? true;
+
+                // Aliyun
+                const au = data.aliyundrive_upload || {};
+                document.getElementById('setting-aliyun-enabled').checked = au.enabled || false;
+                document.getElementById('setting-aliyun-path').value = au.remote_path || '/video';
+                document.getElementById('setting-aliyun-delete').checked = au.delete_after_upload || false;
+
+            } catch(e) { console.error('Settings load error:', e); }
+        }
+
+        function toggleDaRows() {
+            const enabled = document.getElementById('setting-da-enabled').checked;
+            document.getElementById('da-action-row').style.display = enabled ? '' : 'none';
+            const action = document.getElementById('setting-da-action').value;
+            document.getElementById('da-target-row').style.display =
+                (enabled && (action === 'forward' || action === 'all')) ? '' : 'none';
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const daActionEl = document.getElementById('setting-da-action');
+            if (daActionEl) daActionEl.addEventListener('change', toggleDaRows);
+        });
+
+        function renderMediaTypes(types) {
+            const container = document.getElementById('media-types-checkboxes');
+            if (!container) return;
+            const allTypes = ['video', 'audio', 'photo', 'document', 'voice', 'animation'];
+            container.innerHTML = allTypes.map(t => {
+                const checked = types && types.includes(t);
+                return `<label class="flex items-center gap-1 text-xs px-2 py-1.5 rounded-lg" style="background:var(--tg-secondary-bg);min-height:36px">
+                    <input type="checkbox" value="${t}" ${checked ? 'checked' : ''}
+                           onchange="saveDownloadSettings()" style="width:16px;height:16px;accent-color:var(--tg-button)">
+                    ${t}
+                </label>`;
+            }).join('');
+        }
+
+        function _getMediaTypes() {
+            return Array.from(document.querySelectorAll('#media-types-checkboxes input:checked'))
+                .map(el => el.value);
+        }
+
+        async function saveDefaultAction() {
+            haptic('light');
+            toggleDaRows();
+            try {
+                await fetchApi('/config/default-action', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        enabled: document.getElementById('setting-da-enabled').checked,
+                        action: document.getElementById('setting-da-action').value,
+                        target_chat: document.getElementById('setting-da-target').value || '',
+                        delete_after_forward: false,
+                    })
+                });
+                showToast('已保存');
+            } catch(e) { showToast('❌ ' + e.message); }
+        }
+
+        let _downloadSaveTimer;
+        async function saveDownloadSettings() {
+            clearTimeout(_downloadSaveTimer);
+            _downloadSaveTimer = setTimeout(async () => {
+                haptic('light');
+                try {
+                    await fetchApi('/config/download', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            max_download_task: parseInt(document.getElementById('setting-max-tasks').value),
+                            media_types: _getMediaTypes(),
+                            adaptive_concurrency: document.getElementById('setting-adaptive').checked,
+                            always_fresh_download: document.getElementById('setting-fresh').checked,
+                            progress_notification: document.getElementById('setting-notification').checked,
+                        })
+                    });
+                    showToast('已保存');
+                } catch(e) { showToast('❌ ' + e.message); }
+            }, 400);
+        }
+
+        let _fileSaveTimer;
+        async function saveFileSettings() {
+            clearTimeout(_fileSaveTimer);
+            _fileSaveTimer = setTimeout(async () => {
+                haptic('light');
+                try {
+                    await fetchApi('/config/file', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            file_rename_enabled: document.getElementById('setting-rename-enabled').checked,
+                            file_rename_pattern: document.getElementById('setting-rename-pattern').value,
+                            file_dedup_enabled: document.getElementById('setting-dedup-enabled').checked,
+                        })
+                    });
+                    showToast('已保存');
+                } catch(e) { showToast('❌ ' + e.message); }
+            }, 400);
+        }
+
+        async function saveNotificationSettings() {
+            haptic('light');
+            try {
+                await fetchApi('/config/download', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        progress_notification: document.getElementById('setting-notification').checked,
+                    })
+                });
+                showToast('已保存');
+            } catch(e) { showToast('❌ ' + e.message); }
+        }
+
+        let _aliyunSaveTimer;
+        async function saveAliyunSettings() {
+            clearTimeout(_aliyunSaveTimer);
+            _aliyunSaveTimer = setTimeout(async () => {
+                haptic('light');
+                try {
+                    await fetchApi('/config/aliyun', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            enabled: document.getElementById('setting-aliyun-enabled').checked,
+                            remote_path: document.getElementById('setting-aliyun-path').value,
+                            delete_after_upload: document.getElementById('setting-aliyun-delete').checked,
+                        })
+                    });
+                    showToast('已保存');
+                } catch(e) { showToast('❌ ' + e.message); }
+            }, 400);
+        }
+
         // Override switchTab to manage MainButton
         const _origSwitchTab = switchTab;
         switchTab = function(tab) {
@@ -1082,6 +1408,7 @@
             if (tab === 'queue') loadQueue();
             if (tab === 'dashboard') { updateStats(); loadChannels(); checkLogin(); }
             if (tab === 'storage') { loadStorage(); loadHistory(); }
+            if (tab === 'settings') loadSettings();
         };
 
         // ── Init ──

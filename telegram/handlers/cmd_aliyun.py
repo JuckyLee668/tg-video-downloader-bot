@@ -19,8 +19,10 @@ from pathlib import Path
 
 import httpx
 from loguru import logger
+from telethon import Button
 
 from core.config import config
+from telegram.state_manager import state_manager
 
 REPO = "tickstep/aliyunpan"
 INSTALL_PATH = "/usr/local/bin/aliyunpan"
@@ -228,7 +230,7 @@ async def aliyun_handler(event, arg=None):
     rest = parts[1] if len(parts) > 1 else ""
 
     if not sub:
-        return await _show_status(event)
+        return await _show_inline_menu(event)
     elif sub == "login":
         return await _cmd_login(event)
     elif sub == "logout":
@@ -398,3 +400,136 @@ async def _cmd_set_path(event, path: str):
         config.aliyundrive_upload.enabled = True
     config.save()
     await event.respond(f"✅ 已设置上传目录为 `{path}`，已自动启用自动上传。")
+
+
+# ── 内联键盘交互 ──
+
+def _aliyun_status_text():
+    cfg = config.aliyundrive_upload
+    upload_status = "🟢 已启用" if cfg.enabled else "🔴 已禁用"
+    return (
+        f"☁️ **阿里云盘**\n\n"
+        f"自动上传: {upload_status}\n"
+        f"上传目录: `{cfg.remote_path}`\n"
+        f"上传后删除: {'✅' if cfg.delete_after_upload else '❌'}"
+    )
+
+
+def _aliyun_keyboard():
+    cfg = config.aliyundrive_upload
+    return [
+        [Button.inline("🟢 启用上传" if not cfg.enabled else "🔴 禁用上传", b"aliyun:toggle")],
+        [Button.inline("📁 设置目录", b"aliyun:path")],
+        [Button.inline("🗑 上传后删除: " + ("开" if cfg.delete_after_upload else "关"), b"aliyun:delete_toggle")],
+        [Button.inline("🔑 登录", b"aliyun:login"),
+         Button.inline("🚪 退出", b"aliyun:logout")],
+        [Button.inline("📂 列出文件", b"aliyun:ls"),
+         Button.inline("🌳 目录树", b"aliyun:tree")],
+        [Button.inline("📊 状态", b"aliyun:status")],
+    ]
+
+
+async def _show_inline_menu(event):
+    """显示内联键盘主菜单"""
+    await event.respond(
+        _aliyun_status_text() + "\n\n💡 选择操作：",
+        buttons=_aliyun_keyboard(),
+    )
+
+
+async def aliyun_callback_handler(event):
+    """处理 aliyun: 回调"""
+    data = event.data.decode() if isinstance(event.data, bytes) else event.data
+    chat_id = str(event.chat_id)
+
+    if data == "aliyun:toggle":
+        new_state = not config.aliyundrive_upload.enabled
+        config.aliyundrive_upload.enabled = new_state
+        config.save()
+        label = "✅ 已启用" if new_state else "⏸️ 已禁用"
+        await event.edit(
+            _aliyun_status_text() + f"\n\n{label}",
+            buttons=_aliyun_keyboard(),
+        )
+        return
+
+    if data == "aliyun:path":
+        await state_manager.set(chat_id, {"command": "aliyun_path", "step": "input"})
+        await event.edit(
+            _aliyun_status_text() + "\n\n📁 请输入上传目录路径：\n示例: `/video`\n发送 `/cancel` 取消。",
+            buttons=None,
+        )
+        return
+
+    if data == "aliyun:delete_toggle":
+        new_state = not config.aliyundrive_upload.delete_after_upload
+        config.aliyundrive_upload.delete_after_upload = new_state
+        config.save()
+        await event.edit(
+            _aliyun_status_text() + f"\n\n上传后删除本地: {'✅ 开' if new_state else '❌ 关'}",
+            buttons=_aliyun_keyboard(),
+        )
+        return
+
+    if data == "aliyun:status":
+        await event.edit("📊 正在查询状态...")
+        bin_path = _find_aliyunpan()
+        if not bin_path:
+            await event.edit("❌ aliyunpan CLI 未安装。", buttons=_aliyun_keyboard())
+            return
+        _, who_out = await _run_aliyunpan("who")
+        _, quota_out = await _run_aliyunpan("quota")
+        login_status = "✅ 已登录" if ("当前帐号" in who_out or "昵称" in who_out) else "❌ 未登录"
+        text = (
+            f"{_aliyun_status_text()}\n"
+            f"登录状态: {login_status}\n\n"
+            f"📊 配额:\n`{quota_out[:200]}`\n\n"
+            f"👤 账号:\n`{who_out[:200]}`"
+        )
+        await event.edit(text, buttons=_aliyun_keyboard())
+        return
+
+    # 耗时操作 — 回复新消息
+    if data == "aliyun:login":
+        await event.answer("正在生成登录二维码...")
+        await _cmd_login(event)
+        return
+
+    if data == "aliyun:logout":
+        _, out = await _run_aliyunpan("logout")
+        await event.answer("已退出登录")
+        await event.respond(f"✅ 已退出登录。\n`{out[:200]}`")
+        return
+
+    if data == "aliyun:ls":
+        await event.answer("正在列出文件...")
+        await _cmd_ls(event, "")
+        return
+
+    if data == "aliyun:tree":
+        await event.answer("正在获取目录树...")
+        await _cmd_tree(event, "")
+        return
+
+
+async def handle_aliyun_path(event, state):
+    """FSM: 设置上传目录"""
+    text = event.text.strip()
+    chat_id = str(event.chat_id)
+
+    if text.lower() == "/cancel":
+        await state_manager.clear(chat_id)
+        await event.respond("❌ 已取消。", buttons=_aliyun_keyboard())
+        return
+
+    config.aliyundrive_upload.remote_path = text
+    if not config.aliyundrive_upload.enabled:
+        config.aliyundrive_upload.enabled = True
+    config.save()
+    logger.info(f"Aliyun upload path set to: {text}")
+
+    await state_manager.clear(chat_id)
+    await event.respond(
+        _aliyun_status_text() + f"\n\n✅ 上传目录已设为 `{text}`",
+        buttons=_aliyun_keyboard(),
+    )

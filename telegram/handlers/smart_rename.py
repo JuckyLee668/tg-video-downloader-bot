@@ -1,85 +1,85 @@
-"""配置下载后智能重命名
+"""配置下载后智能重命名 — 内联键盘交互
 
-/rename            — 查看当前状态和 pattern
-/rename on         — 启用
-/rename off        — 禁用
-/rename set <pat>  — 设置重命名 pattern
+/rename — 查看当前状态，使用内联键盘切换/设置 pattern
 """
 
 from loguru import logger
+from telethon import Button
 
 from core.config import config
+from telegram.state_manager import state_manager
+
+
+def _rename_status_text():
+    fn = config.file_rename
+    status = "🟢 已启用" if fn.enabled else "🔴 已禁用"
+    return f"🏷️ **智能重命名**\n\n状态: {status}\nPattern: `{fn.pattern}`"
+
+
+def _rename_keyboard():
+    return [
+        [Button.inline("🟢 启用", b"rename:enable"),
+         Button.inline("🔴 禁用", b"rename:disable")],
+        [Button.inline("✏️ 设置 Pattern", b"rename:pattern")],
+    ]
 
 
 async def smart_rename_handler(event, arg=None):
-    """配置下载后智能重命名"""
-    if not arg:
-        return await _show_status(event)
+    """显示重命名配置内联键盘"""
+    await event.respond(
+        _rename_status_text() + "\n\n💡 选择操作：",
+        buttons=_rename_keyboard(),
+    )
 
-    parts = arg.strip().split(maxsplit=1)
-    cmd = parts[0].lower()
-    param = parts[1] if len(parts) > 1 else ""
 
-    if cmd == "on":
+async def rename_callback_handler(event):
+    """处理 rename: 回调"""
+    data = event.data.decode() if isinstance(event.data, bytes) else event.data
+
+    if data == "rename:enable":
         config.file_rename.enabled = True
         config.save()
-        logger.info("Smart rename enabled")
-        await event.respond(
-            f"✅ 已启用智能重命名。\n"
-            f"当前 pattern: `{config.file_rename.pattern}`"
+        await event.edit(
+            _rename_status_text() + "\n\n✅ 已启用",
+            buttons=_rename_keyboard(),
         )
-
-    elif cmd == "off":
+    elif data == "rename:disable":
         config.file_rename.enabled = False
         config.save()
-        logger.info("Smart rename disabled")
-        await event.respond("⏸️ 已禁用智能重命名。")
-
-    elif cmd == "set":
-        if not param:
-            await event.respond(
-                "❌ 用法：`/rename set <pattern>`\n\n"
-                "可用变量:\n"
-                "• `{channel_title}` — 频道标题\n"
-                "• `{channel_username}` — 频道用户名\n"
-                "• `{date}` — 日期\n"
-                "• `{time}` — 时间\n"
-                "• `{original_name}` — 原文件名\n"
-                "• `{ext}` — 扩展名\n\n"
-                "示例: `/rename set {channel_title}/{date}_{original_name}{ext}`"
-            )
-            return
-        config.file_rename.pattern = param
-        config.file_rename.enabled = True  # 设置 pattern 时自动启用
-        config.save()
-        await event.respond(f"✅ 已设置智能重命名 pattern:\n`{param}`\n\n已自动启用。")
-
-    else:
-        await event.respond(
-            "❌ 未知子命令。支持:\n"
-            "• `/rename on` — 启用\n"
-            "• `/rename off` — 禁用\n"
-            "• `/rename set <pattern>` — 设置 pattern\n"
-            "• `/rename` — 查看状态"
+        await event.edit(
+            _rename_status_text() + "\n\n⏸️ 已禁用",
+            buttons=_rename_keyboard(),
+        )
+    elif data == "rename:pattern":
+        await state_manager.set(event.chat_id, {
+            "command": "rename_pattern",
+            "step": "input",
+        })
+        await event.edit(
+            _rename_status_text()
+            + "\n\n✏️ 请输入重命名 pattern：\n"
+            "可用变量: `{channel_title}` `{channel_username}` `{date}` `{time}` `{original_name}` `{ext}`\n"
+            "示例: `{channel_title}/{date}_{original_name}{ext}`\n\n"
+            "发送 `/cancel` 取消。",
+            buttons=None,
         )
 
 
-async def _show_status(event):
-    fn = config.file_rename
-    status = "🟢 已启用" if fn.enabled else "🔴 已禁用"
-    # Use regular string (not f-string) to avoid brace escaping issues
-    text = (
-        f"🏷️ **智能重命名**\n\n"
-        f"状态: {status}\n"
-        f"Pattern: `{fn.pattern}`\n\n"
-        f"可用变量:\n"
-        "• `{channel_title}` / `{channel_username}` — 频道信息\n"
-        "• `{date}` / `{time}` — 时间\n"
-        "• `{original_name}` / `{ext}` — 文件名\n\n"
-        f"💡 用法:\n"
-        "• `/rename on` — 启用\n"
-        "• `/rename off` — 禁用\n"
-        "• `/rename set {channel_title}/{date}_{original_name}{ext}` — 设置 pattern\n"
-        "• `/rename` — 查看状态"
+async def handle_rename_pattern(event, state):
+    """FSM 处理：设置重命名 pattern"""
+    pattern = event.text.strip()
+    if pattern.lower() == "/cancel":
+        await state_manager.clear(event.chat_id)
+        await event.respond("❌ 已取消。", buttons=_rename_keyboard())
+        return
+
+    config.file_rename.pattern = pattern
+    config.file_rename.enabled = True
+    config.save()
+    logger.info(f"Rename pattern set to: {pattern}")
+
+    await state_manager.clear(event.chat_id)
+    await event.respond(
+        _rename_status_text() + f"\n\n✅ Pattern 已设置，已自动启用。",
+        buttons=_rename_keyboard(),
     )
-    await event.respond(text)

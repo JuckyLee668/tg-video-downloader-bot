@@ -88,4 +88,32 @@ def setup_handlers():
         events.CallbackQuery(data=re.compile(rb'^panel:'))
     )
 
+    # 交互式命令回调处理器
+    from telegram.handlers.progress_push import push_callback_handler
+    from telegram.handlers.smart_rename import rename_callback_handler
+    from telegram.handlers.watch_handler import watch_callback_handler
+    from telegram.handlers.storage import storage_callback_handler
+    from telegram.handlers.cmd_aliyun import aliyun_callback_handler
+
+    bot.add_event_handler(
+        push_callback_handler,
+        events.CallbackQuery(data=re.compile(rb'^push:'))
+    )
+    bot.add_event_handler(
+        rename_callback_handler,
+        events.CallbackQuery(data=re.compile(rb'^rename:'))
+    )
+    bot.add_event_handler(
+        watch_callback_handler,
+        events.CallbackQuery(data=re.compile(rb'^watch:'))
+    )
+    bot.add_event_handler(
+        storage_callback_handler,
+        events.CallbackQuery(data=re.compile(rb'^files:'))
+    )
+    bot.add_event_handler(
+        aliyun_callback_handler,
+        events.CallbackQuery(data=re.compile(rb'^aliyun:'))
+    )
+
     logger.info("Bot 生产级路由系统已全面加载")

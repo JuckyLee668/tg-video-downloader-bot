@@ -374,6 +374,30 @@ async def state_handler(event):
             from telegram.handlers.local_forward import handle_autofwd_target
             await handle_autofwd_target(event, state)
 
+        # --- RENAME PATTERN (inline button → FSM) ---
+        elif cmd == 'rename_pattern':
+            from telegram.handlers.smart_rename import handle_rename_pattern
+            await handle_rename_pattern(event, state)
+
+        # --- WATCH ADD (inline button → 2-step FSM) ---
+        elif cmd == 'watch_add':
+            from telegram.handlers.watch_handler import handle_watch_add_channel, handle_watch_add_keyword
+            step = state.get("step", "")
+            if step == "channel":
+                await handle_watch_add_channel(event, state)
+            elif step == "keyword":
+                await handle_watch_add_keyword(event, state)
+
+        # --- FILES DELETE (inline button → FSM) ---
+        elif cmd == 'files_delete':
+            from telegram.handlers.storage import handle_files_delete
+            await handle_files_delete(event, state)
+
+        # --- ALIYUN PATH (inline button → FSM) ---
+        elif cmd == 'aliyun_path':
+            from telegram.handlers.cmd_aliyun import handle_aliyun_path
+            await handle_aliyun_path(event, state)
+
         # --- SEARCH SELECT (autofwd post-search index selection) ---
         elif cmd == 'search_select':
             from telegram.handlers.search import handle_search_select

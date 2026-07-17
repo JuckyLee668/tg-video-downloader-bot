@@ -54,6 +54,45 @@ class ConfigResponse(BaseModel):
     save_path: str
     max_download_task: int
     media_types: List[str]
+    default_action: Optional[dict] = None
+    local_forward: Optional[dict] = None
+    file_rename: Optional[dict] = None
+    file_dedup: Optional[dict] = None
+    aliyundrive_upload: Optional[dict] = None
+    progress_notification: Optional[bool] = None
+    batch_size: Optional[int] = None
+    adaptive_concurrency: Optional[bool] = None
+    always_fresh_download: Optional[bool] = None
+
+
+class DefaultActionUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    action: Optional[str] = None
+    target_chat: Optional[str] = None
+    delete_after_forward: Optional[bool] = None
+
+
+class DownloadSettingsUpdate(BaseModel):
+    max_download_task: Optional[int] = Field(default=None, ge=1, le=10)
+    media_types: Optional[List[str]] = None
+    adaptive_concurrency: Optional[bool] = None
+    always_fresh_download: Optional[bool] = None
+    progress_notification: Optional[bool] = None
+    batch_size: Optional[int] = Field(default=None, ge=1, le=500)
+
+
+class FileSettingsUpdate(BaseModel):
+    file_rename_enabled: Optional[bool] = None
+    file_rename_pattern: Optional[str] = None
+    file_dedup_enabled: Optional[bool] = None
+    file_dedup_by_message_id: Optional[bool] = None
+    file_dedup_by_file_id: Optional[bool] = None
+
+
+class AliyunSettingsUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    remote_path: Optional[str] = None
+    delete_after_upload: Optional[bool] = None
 
 class TaskIdRequest(BaseModel):
     task_id: str = Field(min_length=1, max_length=200)

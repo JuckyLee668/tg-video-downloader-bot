@@ -20,9 +20,13 @@ from telegram.client import tg_clients
 from telegram.handlers.thumbnail import ensure_thumb_dir, generate_thumbnails
 from telegram.handlers.utils import format_size, message_file_name
 from web.api_models import (
+    AliyunSettingsUpdate,
     BatchDeleteRequest,
     ConnectRequest,
+    DefaultActionUpdate,
     DownloadBatchRequest,
+    DownloadSettingsUpdate,
+    FileSettingsUpdate,
     ForwardRequest,
     HistoryDeleteRequest,
     JoinRequest,
@@ -150,6 +154,15 @@ async def get_config():
         "save_path": config.save_path,
         "max_download_task": config.max_download_task,
         "media_types": config.media_types,
+        "default_action": config.default_action.model_dump(),
+        "local_forward": config.local_forward.model_dump(),
+        "file_rename": config.file_rename.model_dump(),
+        "file_dedup": config.file_dedup.model_dump(),
+        "aliyundrive_upload": config.aliyundrive_upload.model_dump(),
+        "progress_notification": config.progress_notification,
+        "batch_size": config.batch_size,
+        "adaptive_concurrency": config.adaptive_concurrency,
+        "always_fresh_download": config.always_fresh_download,
     }
 
 
@@ -163,6 +176,68 @@ async def set_proxy(req: ProxyConfigRequest):
         return {"status": "success", "proxy": proxy_cfg.model_dump()}
     except Exception as e:
         logger.exception(f"Failed to set proxy: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/config/default-action")
+async def set_default_action(req: DefaultActionUpdate):
+    try:
+        updates = req.model_dump(exclude_none=True, exclude_unset=True)
+        for key, value in updates.items():
+            setattr(config.default_action, key, value)
+        config.save()
+        return {"status": "success", "default_action": config.default_action.model_dump()}
+    except Exception as e:
+        logger.exception(f"Failed to set default action: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/config/download")
+async def set_download_settings(req: DownloadSettingsUpdate):
+    try:
+        updates = req.model_dump(exclude_none=True, exclude_unset=True)
+        for key, value in updates.items():
+            if hasattr(config, key):
+                setattr(config, key, value)
+        config.save()
+        return {"status": "success"}
+    except Exception as e:
+        logger.exception(f"Failed to set download settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/config/file")
+async def set_file_settings(req: FileSettingsUpdate):
+    try:
+        updates = req.model_dump(exclude_none=True, exclude_unset=True)
+        if "file_rename_enabled" in updates:
+            config.file_rename.enabled = updates["file_rename_enabled"]
+        if "file_rename_pattern" in updates:
+            config.file_rename.pattern = updates["file_rename_pattern"]
+        if "file_dedup_enabled" in updates:
+            config.file_dedup.enabled = updates["file_dedup_enabled"]
+        if "file_dedup_by_message_id" in updates:
+            config.file_dedup.by_message_id = updates["file_dedup_by_message_id"]
+        if "file_dedup_by_file_id" in updates:
+            config.file_dedup.by_file_id = updates["file_dedup_by_file_id"]
+        config.save()
+        return {"status": "success", "file_rename": config.file_rename.model_dump(), "file_dedup": config.file_dedup.model_dump()}
+    except Exception as e:
+        logger.exception(f"Failed to set file settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/config/aliyun")
+async def set_aliyun_settings(req: AliyunSettingsUpdate):
+    try:
+        updates = req.model_dump(exclude_none=True, exclude_unset=True)
+        for key, value in updates.items():
+            if hasattr(config.aliyundrive_upload, key):
+                setattr(config.aliyundrive_upload, key, value)
+        config.save()
+        return {"status": "success", "aliyundrive_upload": config.aliyundrive_upload.model_dump()}
+    except Exception as e:
+        logger.exception(f"Failed to set aliyun settings: {e}")
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
