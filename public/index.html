@@ -13,6 +13,17 @@
         * { -webkit-tap-highlight-color: transparent; }
         [v-cloak] { display: none; }
 
+        /* ── Clickable links ── */
+        a.channel-link, a.file-link {
+            color: #3b82f6;
+            text-decoration: none;
+            word-break: break-all;
+        }
+        a.channel-link:hover, a.file-link:hover {
+            text-decoration: underline;
+        }
+        a.channel-link:visited { color: #6366f1; }
+
         /* ── Desktop Tabs ── */
         .tab-btn {
             border-bottom: 2px solid transparent;
@@ -156,8 +167,12 @@
             /* Stack grids */
             .resp-grid { grid-template-columns: 1fr !important; }
 
-            /* Body padding for bottom nav */
-            body { padding-bottom: calc(72px + var(--safe-bottom)); }
+            /* Body overflow + bottom nav padding */
+            body {
+                padding-bottom: calc(72px + var(--safe-bottom));
+                overflow-x: hidden;
+                -webkit-overflow-scrolling: touch;
+            }
 
             /* Stats strip */
             .mobile-stats-strip {
@@ -188,7 +203,7 @@
                 padding: 12px;
                 border: 1.5px solid #e5e7eb;
                 border-radius: 10px;
-                font-size: 15px;
+                font-size: 16px;
                 min-height: 48px;
                 background: #f9fafb;
             }
@@ -223,7 +238,7 @@
                 padding: 12px;
                 border: 1.5px solid #e5e7eb;
                 border-radius: 10px;
-                font-size: 15px;
+                font-size: 16px;
                 min-height: 48px;
                 background: #f9fafb;
                 box-sizing: border-box;
@@ -406,8 +421,8 @@
                             <option value="animation">🎞️ GIF</option>
                         </select>
                         <div class="flex gap-2">
-                            <input type="date" id="m-search-start" class="flex-1" style="min-height:48px;padding:12px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:15px;background:#f9fafb;">
-                            <input type="date" id="m-search-end" class="flex-1" style="min-height:48px;padding:12px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:15px;background:#f9fafb;">
+                            <input type="date" id="m-search-start" class="flex-1" style="min-height:48px;padding:12px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:16px;background:#f9fafb;">
+                            <input type="date" id="m-search-end" class="flex-1" style="min-height:48px;padding:12px;border:1.5px solid #e5e7eb;border-radius:10px;font-size:16px;background:#f9fafb;">
                         </div>
                         <div class="btn-row">
                             <button onclick="searchKeywordM()" class="btn-touch bg-blue-500 text-white">🔍 关键词</button>
@@ -782,11 +797,14 @@
             try {
                 const channels = await fetchApi('/channels');
                 const list = document.getElementById('channel-list');
-                list.innerHTML = channels.map(c => `
+                list.innerHTML = channels.map(c => {
+                    const userLink = c.username ? `<a class="channel-link" href="https://t.me/${c.username}" target="_blank" rel="noopener">@${c.username}</a>` : 'N/A';
+                    return `
                     <li class="p-3 bg-gray-50 rounded border text-sm flex justify-between items-center hover:bg-gray-100 transition shadow-sm">
                         <div><b class="text-gray-800">${c.title}</b>
-                        <div class="text-[10px] text-gray-500">@${c.username || 'N/A'} | ${c.channel_id}</div></div>
-                    </li>`).join('') || '<li class="text-gray-500 italic text-center py-4">No channels connected</li>';
+                        <div class="text-[10px] text-gray-500">${userLink} | ${c.channel_id}</div></div>
+                    </li>`;
+                }).join('') || '<li class="text-gray-500 italic text-center py-4">No channels connected</li>';
                 loadChannelsM(channels);
             } catch(e) { console.error(e); }
         }
@@ -799,14 +817,17 @@
                     el.innerHTML = '<p class="text-gray-400 text-center py-3 text-sm">暂无频道</p>';
                     return;
                 }
-                el.innerHTML = channelsOverride.map(c => `
+                el.innerHTML = channelsOverride.map(c => {
+                    const userLink = c.username ? `<a class="channel-link" href="https://t.me/${c.username}" target="_blank" rel="noopener">@${c.username}</a>` : 'N/A';
+                    return `
                     <div class="flex items-center gap-2 p-2 rounded-lg bg-gray-50 text-sm">
                         <div class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-xs">${c.title[0]}</div>
                         <div class="flex-1 min-w-0">
                             <div class="font-semibold truncate text-xs">${c.title}</div>
-                            <div class="text-xs text-gray-500">@${c.username || 'N/A'}</div>
+                            <div class="text-xs text-gray-500">${userLink}</div>
                         </div>
-                    </div>`).join('');
+                    </div>`;
+                }).join('');
             }
         }
 
