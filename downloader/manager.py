@@ -96,6 +96,7 @@ class DownloadManager:
         task_id = task["task_id"]
         task_data = self._loads_task_data(task.get("task_data"))
         self.active_tasks.add(task_id)
+        deferred_to_background = False  # set True when compression runs in background
 
         try:
             logger.info(f"Worker {worker_id} started task {task_id}: {task.get('file_name')}")
@@ -176,54 +177,37 @@ class DownloadManager:
                 )
 
             # ── Large file compression ────────────────────────────────
-            if config.large_file.enabled and actual_path.stat().st_size > config.large_file.threshold_mb * 1024 * 1024:
-                actual_path = await self._handle_large_file(
-                    actual_path, task, task_data,
-                    progress_msg_ref=progress_msg_ref,
-                    requester_id=requester_id,
-                )
-
-            # ── Shared post-download pipeline ───────────────────────────
-            await self._forward_if_requested(tg_clients, actual_path, task, task_data)
-
-            # 外部任务根据 action 决定是否上传云盘
-            cloud_enabled = config.aliyundrive_upload.enabled
-            local_enabled = config.local_forward.enabled and bool(config.local_forward.target_chat)
-            if is_external:
-                action = task_data.get("action", "download")
-                cloud_enabled = action in ("cloud", "all")
-                local_enabled = False  # 外部任务不使用 local_forward 配置
-
-            if cloud_enabled:
-                aliyundrive_uploader.enabled = True
-                aliyundrive_uploader.remote_path = config.aliyundrive_upload.remote_path
-                aliyundrive_uploader.delete_after_upload = (
-                    config.aliyundrive_upload.delete_after_upload
-                )
-                upload_ok = await aliyundrive_uploader.upload(actual_path)
-                if not upload_ok:
-                    logger.warning(
-                        f"AliyunDrive upload failed for task {task_id}, but download succeeded"
-                    )
-
-            if local_enabled:
-                await self._auto_forward_to_local(tg_clients, actual_path, task, task_data)
-
-            # ── Cleanup: delete local file if configured ───────────
-            should_delete = bool(task_data.get("delete_after_forward", False))
-            # aliyundrive may have already deleted it; check existence first
-            if should_delete and actual_path.exists():
-                actual_path.unlink(missing_ok=True)
-                logger.info(f"Deleted local file after forward: {actual_path.name}")
-
-            await db_manager.complete_download_task(
-                task,
-                {
-                    "download_path": "" if should_delete else str(actual_path),
-                    "status": "completed",
-                },
+            needs_compression = (
+                config.large_file.enabled
+                and actual_path.stat().st_size > config.large_file.threshold_mb * 1024 * 1024
             )
-            await self._notify_success(tg_clients, task, task_data)
+
+            if needs_compression:
+                # 压缩耗时较长，转为后台任务，worker 立即释放去处理下一个文件
+                asyncio.create_task(
+                    self._post_download_pipeline(
+                        tg_clients, actual_path, task, task_data,
+                        task_id=task_id,
+                        is_external=is_external,
+                        progress_msg_ref=progress_msg_ref,
+                        requester_id=requester_id,
+                        needs_compression=True,
+                    )
+                )
+                # Worker 不等压缩完成，直接取下一个任务
+                deferred_to_background = True
+                self.active_tasks.discard(task_id)
+                return
+
+            # ── No compression needed: inline pipeline (fast path) ─────
+            await self._post_download_pipeline(
+                tg_clients, actual_path, task, task_data,
+                task_id=task_id,
+                is_external=is_external,
+                progress_msg_ref=progress_msg_ref,
+                requester_id=requester_id,
+                needs_compression=False,
+            )
 
         except FloodWaitError as e:
             wait_seconds = int(getattr(e, "seconds", 30))
@@ -248,17 +232,19 @@ class DownloadManager:
                     await self._notify_failure(tg_clients, task, task_data, e)
         finally:
             self.active_tasks.discard(task_id)
-            cached = self._video_attrs_cache.pop(task_id, None)
-            if cached and cached.get("thumb"):
-                thumb_path = cached["thumb"]
-                if isinstance(thumb_path, str):
-                    thumb_path = Path(thumb_path)
-                try:
-                    thumb_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
-            # Safety net: clean up any remaining progress message references
-            self._progress_msg_ids.pop(task_id, None)
+            if not deferred_to_background:
+                # Clean up caches — unless compression was deferred to background,
+                # in which case _post_download_pipeline will handle it.
+                cached = self._video_attrs_cache.pop(task_id, None)
+                if cached and cached.get("thumb"):
+                    thumb_path = cached["thumb"]
+                    if isinstance(thumb_path, str):
+                        thumb_path = Path(thumb_path)
+                    try:
+                        thumb_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                self._progress_msg_ids.pop(task_id, None)
 
     async def _resolve_message(self, tg_clients, task: Dict[str, Any], task_data: Dict[str, Any]):
         download_client = None
@@ -583,6 +569,86 @@ class DownloadManager:
             logger.info(f"Compressed large file: {actual_path.name} ({actual_path.stat().st_size / 1024 / 1024:.0f}MB)")
 
         return actual_path
+
+    async def _post_download_pipeline(
+        self,
+        tg_clients,
+        actual_path: Path,
+        task: Dict[str, Any],
+        task_data: Dict[str, Any],
+        task_id: str,
+        is_external: bool,
+        progress_msg_ref=None,
+        requester_id=None,
+        needs_compression: bool = False,
+    ):
+        """Post-download pipeline: compression (if needed) + forward + cloud + cleanup.
+
+        Runs in background when compression is needed so the worker can immediately
+        pick up the next download task.
+        """
+        try:
+            # ── Compression ────────────────────────────────────────────
+            if needs_compression:
+                actual_path = await self._handle_large_file(
+                    actual_path, task, task_data,
+                    progress_msg_ref=progress_msg_ref,
+                    requester_id=requester_id,
+                )
+
+            # ── Forward ────────────────────────────────────────────────
+            await self._forward_if_requested(tg_clients, actual_path, task, task_data)
+
+            # ── Cloud / local forward ──────────────────────────────────
+            cloud_enabled = config.aliyundrive_upload.enabled
+            local_enabled = config.local_forward.enabled and bool(config.local_forward.target_chat)
+            if is_external:
+                action = task_data.get("action", "download")
+                cloud_enabled = action in ("cloud", "all")
+                local_enabled = False
+
+            if cloud_enabled:
+                aliyundrive_uploader.enabled = True
+                aliyundrive_uploader.remote_path = config.aliyundrive_upload.remote_path
+                aliyundrive_uploader.delete_after_upload = config.aliyundrive_upload.delete_after_upload
+                upload_ok = await aliyundrive_uploader.upload(actual_path)
+                if not upload_ok:
+                    logger.warning(f"AliyunDrive upload failed for task {task_id}, but download succeeded")
+
+            if local_enabled:
+                await self._auto_forward_to_local(tg_clients, actual_path, task, task_data)
+
+            # ── Cleanup ────────────────────────────────────────────────
+            should_delete = bool(task_data.get("delete_after_forward", False))
+            if should_delete and actual_path.exists():
+                actual_path.unlink(missing_ok=True)
+                logger.info(f"Deleted local file after forward: {actual_path.name}")
+
+            await db_manager.complete_download_task(
+                task,
+                {
+                    "download_path": "" if should_delete else str(actual_path),
+                    "status": "completed",
+                },
+            )
+            await self._notify_success(tg_clients, task, task_data)
+
+        except Exception as e:
+            logger.error(f"Post-download pipeline failed for task {task_id}: {e}")
+            await db_manager.update_task_status(task_id, "failed", str(e))
+            await self._notify_failure(tg_clients, task, task_data, e)
+        finally:
+            self.active_tasks.discard(task_id)
+            cached = self._video_attrs_cache.pop(task_id, None)
+            if cached and cached.get("thumb"):
+                thumb_path = cached["thumb"]
+                if isinstance(thumb_path, str):
+                    thumb_path = Path(thumb_path)
+                try:
+                    thumb_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            self._progress_msg_ids.pop(task_id, None)
 
     async def _auto_forward_to_local(self, tg_clients, save_path: Path, task: Dict[str, Any], task_data: Dict[str, Any] = None):
         """下载完成后自动转发到配置的本地聊天"""
