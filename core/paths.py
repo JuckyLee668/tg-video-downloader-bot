@@ -32,6 +32,11 @@ def sanitize_filename(file_name: str, fallback: str = "download.bin", max_length
 
 def safe_join_download_path(root: str | Path, file_name: str) -> Path:
     root_path = Path(root).expanduser().resolve()
+    if not root or str(root).strip() in ("", ".", "./"):
+        raise ValueError(
+            "save_path is empty or resolves to the current directory. "
+            "Set a dedicated download directory in config.yaml, e.g. save_path: ./downloads"
+        )
     target = (root_path / sanitize_filename(file_name)).resolve()
     if target != root_path and root_path not in target.parents:
         raise ValueError("download path escapes configured save directory")

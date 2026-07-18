@@ -20,6 +20,14 @@ data/
 # Downloads & Media
 downloads/
 public/avatars/user_*.jpg
+# Prevent accidental downloads in project root
+*.jpg
+*.mp4
+*.mkv
+*.png
+*.gif
+*.webp
+*.webm
 
 # Logs
 *.log
