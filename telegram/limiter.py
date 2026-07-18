@@ -31,3 +31,7 @@ class MessageRateLimiter:
             self.global_history.append(now)
 
 rate_limiter = MessageRateLimiter()
+
+# Upload rate limiter — more conservative than download because Telegram
+# enforces stricter limits on upload/file-send operations
+upload_rate_limiter = MessageRateLimiter(max_per_second=1, max_per_minute=5)

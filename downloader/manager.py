@@ -635,9 +635,17 @@ class DownloadManager:
             await self._notify_success(tg_clients, task, task_data)
 
         except Exception as e:
-            logger.error(f"Post-download pipeline failed for task {task_id}: {e}")
-            await db_manager.update_task_status(task_id, "failed", str(e))
-            await self._notify_failure(tg_clients, task, task_data, e)
+            wait_seconds = self._parse_flood_wait_seconds(str(e))
+            if wait_seconds:
+                logger.warning(
+                    f"Flood wait in post-download pipeline for task {task_id}: {wait_seconds}s"
+                )
+                await db_manager.requeue_task(task_id, f"Flood wait {wait_seconds}s")
+                asyncio.create_task(self._wake_after(wait_seconds + 1))
+            else:
+                logger.error(f"Post-download pipeline failed for task {task_id}: {e}")
+                await db_manager.update_task_status(task_id, "failed", str(e))
+                await self._notify_failure(tg_clients, task, task_data, e)
         finally:
             self.active_tasks.discard(task_id)
             cached = self._video_attrs_cache.pop(task_id, None)
@@ -650,6 +658,122 @@ class DownloadManager:
                 except Exception:
                     pass
             self._progress_msg_ids.pop(task_id, None)
+
+    async def _upload_and_send(
+        self,
+        client,
+        save_path: Path,
+        peer,
+        task: Dict[str, Any],
+        task_data: Dict[str, Any],
+        *,
+        force_doc: bool = False,
+        caption: str = "",
+        reply_to=None,
+        video_attrs: dict | None = None,
+        forward_target: str = "",
+        max_retries: int = 3,
+    ):
+        """Upload a file and send it with flood-wait retry logic.
+
+        Handles FLOOD_WAIT, FLOOD_PREMIUM_WAIT, and SaveBigFilePartRequest
+        errors with proper wait-then-retry. Uploads are rate-limited to
+        avoid hitting Telegram flood protection in the first place.
+        """
+        from telethon.errors import FloodWaitError
+
+        from telegram.limiter import upload_rate_limiter
+
+        if video_attrs is None:
+            video_attrs = {}
+
+        file_size = save_path.stat().st_size
+        part_size_kb = 512 if file_size > 100 * 1024 * 1024 else None
+
+        for attempt in range(max_retries + 1):
+            try:
+                # Rate-limit uploads to avoid triggering flood protection
+                await upload_rate_limiter.wait()
+
+                uploaded = await client.upload_file(
+                    str(save_path),
+                    part_size_kb=part_size_kb,
+                    progress_callback=self.create_progress_callback(task["task_id"]),
+                )
+                await client.send_file(
+                    peer,
+                    uploaded,
+                    caption=caption,
+                    force_document=force_doc,
+                    reply_to=reply_to,
+                    attributes=video_attrs.get("attributes"),
+                    supports_streaming=video_attrs.get("supports_streaming", False),
+                    nosound_video=video_attrs.get("nosound") or None,
+                    thumb=video_attrs.get("thumb"),
+                )
+                return  # success
+
+            except FloodWaitError as e:
+                wait_seconds = int(getattr(e, "seconds", 30))
+                if attempt < max_retries:
+                    logger.warning(
+                        f"Upload flood wait for {save_path.name}: {wait_seconds}s "
+                        f"(attempt {attempt + 1}/{max_retries + 1})"
+                    )
+                    await asyncio.sleep(wait_seconds + 1)
+                else:
+                    raise
+
+            except Exception as e:
+                # Handle FLOOD_PREMIUM_WAIT wrapped in a generic RPCError
+                wait_seconds = self._parse_flood_wait_seconds(str(e))
+                if wait_seconds and attempt < max_retries:
+                    logger.warning(
+                        f"Upload flood wait (text) for {save_path.name}: {wait_seconds}s "
+                        f"(attempt {attempt + 1}/{max_retries + 1})"
+                    )
+                    await asyncio.sleep(wait_seconds + 1)
+                    continue
+
+                # SaveBigFilePartRequest: retry with direct file path (bypass
+                # the pre-uploaded reference, which may have invalid parts)
+                if "SaveBigFilePartRequest" in str(e) or "file parts is invalid" in str(e):
+                    if attempt < max_retries:
+                        logger.warning(
+                            f"SaveBigFilePartRequest for {save_path.name}, "
+                            f"retrying with direct path (attempt {attempt + 1}/{max_retries + 1})"
+                        )
+                        await asyncio.sleep(3)
+                        # Re-resolve peer if a forward target is known
+                        if forward_target:
+                            try:
+                                peer, reply_to = await self._resolve_forward_peer(
+                                    client, forward_target
+                                )
+                            except Exception:
+                                pass
+                        await upload_rate_limiter.wait()
+                        await client.send_file(
+                            peer,
+                            str(save_path),
+                            caption=caption,
+                            force_document=force_doc,
+                            reply_to=reply_to,
+                            attributes=video_attrs.get("attributes"),
+                            supports_streaming=video_attrs.get("supports_streaming", False),
+                            nosound_video=video_attrs.get("nosound") or None,
+                            thumb=video_attrs.get("thumb"),
+                        )
+                        return  # success with direct-path retry
+                    raise
+
+                # Not a retryable error — re-raise immediately
+                raise
+
+        # Exhausted all retries
+        raise RuntimeError(
+            f"Upload failed for {save_path.name} after {max_retries + 1} attempts"
+        )
 
     async def _auto_forward_to_local(self, tg_clients, save_path: Path, task: Dict[str, Any], task_data: Dict[str, Any] = None):
         """下载完成后自动转发到配置的本地聊天"""
@@ -695,21 +819,17 @@ class DownloadManager:
 
             video_attrs = self._video_attrs_cache.pop(task["task_id"], {})
             force_doc = task.get("media_type") == "document"
-            uploaded = await tg_clients.user_client.upload_file(
-                str(save_path),
-                part_size_kb=512 if file_size > 100 * 1024 * 1024 else None,
-                progress_callback=self.create_progress_callback(task["task_id"]),
-            )
-            await tg_clients.user_client.send_file(
+            await self._upload_and_send(
+                tg_clients.user_client,
+                save_path,
                 peer,
-                uploaded,
+                task,
+                task_data or {},
+                force_doc=force_doc,
                 caption=f"📥 {task.get('file_name', '')}",
-                force_document=force_doc,
                 reply_to=reply_to,
-                attributes=video_attrs.get("attributes"),
-                supports_streaming=video_attrs.get("supports_streaming", False),
-                nosound_video=video_attrs.get("nosound") or None,
-                thumb=video_attrs.get("thumb"),
+                video_attrs=video_attrs,
+                forward_target=target,
             )
             logger.info(f"Auto forwarded to local chat {target}: {save_path.name}")
 
@@ -729,68 +849,47 @@ class DownloadManager:
             raise RuntimeError("User client is required for forwarding")
 
         video_attrs = self._video_attrs_cache.pop(task["task_id"], {})
-        try:
-            peer, reply_to = await self._resolve_forward_peer(tg_clients.user_client, forward_target)
-            file_size = save_path.stat().st_size
-            if file_size > 2000 * 1024 * 1024:
-                me = await tg_clients.user_client.get_me()
-                if not getattr(me, "premium", False):
-                    # Try compression if enabled and not already attempted
-                    if config.large_file.enabled and compressor.is_available():
-                        already_compressed = task_data.get("compressed", False)
-                        if not already_compressed:
-                            logger.info(f"Compressing large file before forward: {save_path.name}")
-                            save_path = await self._handle_large_file(save_path, task, task_data)
-                            task_data["compressed"] = True
-                            file_size = save_path.stat().st_size
-                            if file_size <= 2000 * 1024 * 1024:
-                                pass  # Proceed with forward
-                            else:
-                                raise RuntimeError(
-                                    "File still exceeds 2GB after compression. "
-                                    "Try a lower CRF value in settings, or upgrade to Telegram Premium."
-                                )
+        peer, reply_to = await self._resolve_forward_peer(tg_clients.user_client, forward_target)
+        file_size = save_path.stat().st_size
+        if file_size > 2000 * 1024 * 1024:
+            me = await tg_clients.user_client.get_me()
+            if not getattr(me, "premium", False):
+                # Try compression if enabled and not already attempted
+                if config.large_file.enabled and compressor.is_available():
+                    already_compressed = task_data.get("compressed", False)
+                    if not already_compressed:
+                        logger.info(f"Compressing large file before forward: {save_path.name}")
+                        save_path = await self._handle_large_file(save_path, task, task_data)
+                        task_data["compressed"] = True
+                        file_size = save_path.stat().st_size
+                        if file_size <= 2000 * 1024 * 1024:
+                            pass  # Proceed with forward
                         else:
                             raise RuntimeError(
                                 "File still exceeds 2GB after compression. "
                                 "Try a lower CRF value in settings, or upgrade to Telegram Premium."
                             )
                     else:
-                        raise RuntimeError("File exceeds 2GB and the user account is not premium")
+                        raise RuntimeError(
+                            "File still exceeds 2GB after compression. "
+                            "Try a lower CRF value in settings, or upgrade to Telegram Premium."
+                        )
+                else:
+                    raise RuntimeError("File exceeds 2GB and the user account is not premium")
 
-            force_doc = task.get("media_type") == "document"
-            uploaded_file = await tg_clients.user_client.upload_file(
-                str(save_path),
-                part_size_kb=512 if file_size > 100 * 1024 * 1024 else None,
-                progress_callback=self.create_progress_callback(task["task_id"]),
-            )
-            await tg_clients.user_client.send_file(
-                peer,
-                uploaded_file,
-                caption=task_data.get("caption", "") or "",
-                force_document=force_doc,
-                reply_to=reply_to,
-                attributes=video_attrs.get("attributes"),
-                supports_streaming=video_attrs.get("supports_streaming", False),
-                nosound_video=video_attrs.get("nosound") or None,
-                thumb=video_attrs.get("thumb"),
-            )
-        except Exception as e:
-            if "SaveBigFilePartRequest" in str(e) or "file parts is invalid" in str(e):
-                await asyncio.sleep(3)
-                peer, reply_to = await self._resolve_forward_peer(tg_clients.user_client, forward_target)
-                await tg_clients.user_client.send_file(
-                    peer,
-                    str(save_path),
-                    caption=task_data.get("caption", "") or "",
-                    reply_to=reply_to,
-                    attributes=video_attrs.get("attributes"),
-                    supports_streaming=video_attrs.get("supports_streaming", False),
-                    nosound_video=video_attrs.get("nosound") or None,
-                    thumb=video_attrs.get("thumb"),
-                )
-            else:
-                raise
+        force_doc = task.get("media_type") == "document"
+        await self._upload_and_send(
+            tg_clients.user_client,
+            save_path,
+            peer,
+            task,
+            task_data,
+            force_doc=force_doc,
+            caption=task_data.get("caption", "") or "",
+            reply_to=reply_to,
+            video_attrs=video_attrs,
+            forward_target=str(forward_target),
+        )
 
     async def _resolve_forward_peer(self, client, target: Any):
         """Resolve a forward target to (peer, reply_to_msg_id).
