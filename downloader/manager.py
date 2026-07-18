@@ -28,13 +28,12 @@ class DownloadManager:
         self._video_attrs_cache: dict[str, dict] = {}
 
     async def init(self):
-        pending_tasks = await db_manager.get_pending_tasks()
-        for _ in pending_tasks:
-            await self.queue.put("wake")
-
         while len(self.worker_tasks) < self.max_concurrent:
             worker_id = len(self.worker_tasks)
             self.worker_tasks.append(asyncio.create_task(self.worker(worker_id)))
+
+        # 唤醒所有 worker，让它们各自去抢任务
+        await self.wake_workers(self.max_concurrent)
 
         logger.info(f"Download manager initialized with {self.max_concurrent} workers")
 
@@ -65,7 +64,7 @@ class DownloadManager:
                     return "duplicate"
 
         task_id = await db_manager.add_download_task(task)
-        await self.queue.put("wake")
+        await self.wake_workers(1)
         return task_id
 
     async def cancel_user_tasks(self, chat_id: str):
