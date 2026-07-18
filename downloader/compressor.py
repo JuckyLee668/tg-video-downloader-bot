@@ -1,7 +1,6 @@
 """FFmpeg-based video compression for files exceeding Telegram's 2GB limit."""
 
 import asyncio
-import re
 import shutil
 from pathlib import Path
 from typing import Callable, Optional
@@ -259,7 +258,6 @@ class VideoCompressor:
         and uses the video duration to calculate percentage progress.
         """
         import os
-        import signal
 
         total_duration_us = 0
         # Try to get duration from ffprobe first
@@ -312,8 +310,6 @@ class VideoCompressor:
                             if progress != last_progress and (progress > last_progress or (current_time - last_update_time) > 2):
                                 last_progress = progress
                                 last_update_time = current_time
-                                # Scale progress to estimated output size proportion
-                                estimated_size = int(Path(args[-1]).stat().st_size if Path(args[-1]).exists() else 0)
                                 await progress_callback(
                                     min(out_time_us, total_duration_us),
                                     total_duration_us,

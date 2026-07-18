@@ -80,6 +80,6 @@ async def handle_rename_pattern(event, state):
 
     await state_manager.clear(event.chat_id)
     await event.respond(
-        _rename_status_text() + f"\n\n✅ Pattern 已设置，已自动启用。",
+        _rename_status_text() + "\n\n✅ Pattern 已设置，已自动启用。",
         buttons=_rename_keyboard(),
     )

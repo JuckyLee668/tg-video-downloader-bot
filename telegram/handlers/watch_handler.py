@@ -38,7 +38,7 @@ def _rules_status_text(chat_id, rules):
     if not rules:
         return "📡 **监控规则**\n\n暂无规则。点击下方按钮添加。"
     lines = [f"📡 **监控规则 ({len(rules)})**:"]
-    for i, rule in enumerate(rules, 1):
+    for _i, rule in enumerate(rules, 1):
         keyword_part = f' "{rule["keyword"]}"' if rule.get('keyword') else ''
         media_part = f" [{rule['media_type']}]" if rule.get('media_type') else ''
         extra = keyword_part or media_part or " 全部媒体"
@@ -53,7 +53,6 @@ def _rules_keyboard(rules):
     kb = []
     for rule in rules:
         status_icon = "⏸️" if rule.get('enabled') else "▶️"
-        ch_title = (rule.get('channel_title', '') or f"ID {rule['channel_id']}")[:15]
         kb.append([
             Button.inline(f"{status_icon} {rule['id']}", f"watch:toggle:{rule['id']}".encode()),
             Button.inline(f"🗑 {rule['id']}", f"watch:delete:{rule['id']}".encode()),
@@ -240,7 +239,7 @@ async def _add_rule(event, chat_id: str, args: str):
     try:
         entity = await tg_clients.user_client.get_input_entity(identifier)
         full_entity = await tg_clients.user_client.get_entity(entity)
-    except Exception as e:
+    except Exception:
         await event.respond(f"❌ 无法解析频道 `{identifier}`。")
         return
 

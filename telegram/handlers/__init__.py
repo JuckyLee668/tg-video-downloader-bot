@@ -89,11 +89,11 @@ def setup_handlers():
     )
 
     # 交互式命令回调处理器
+    from telegram.handlers.cmd_aliyun import aliyun_callback_handler
     from telegram.handlers.progress_push import push_callback_handler
     from telegram.handlers.smart_rename import rename_callback_handler
-    from telegram.handlers.watch_handler import watch_callback_handler
     from telegram.handlers.storage import storage_callback_handler
-    from telegram.handlers.cmd_aliyun import aliyun_callback_handler
+    from telegram.handlers.watch_handler import watch_callback_handler
 
     bot.add_event_handler(
         push_callback_handler,

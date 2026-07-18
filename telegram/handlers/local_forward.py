@@ -5,7 +5,6 @@ from core.config import config
 from telegram.client import tg_clients
 from telegram.state_manager import state_manager
 
-
 # ── helpers ──────────────────────────────────────────────────────────
 
 def _status_text():

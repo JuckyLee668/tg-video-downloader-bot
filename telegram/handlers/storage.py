@@ -60,7 +60,6 @@ async def storage_handler(event, arg=None):
 
     # 兼容旧文本命令
     if arg:
-        import asyncio
         return await _legacy_handler(event, arg)
 
     if not downloads_dir.exists():

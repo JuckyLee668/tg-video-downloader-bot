@@ -384,7 +384,10 @@ async def state_handler(event):
 
         # --- WATCH ADD (inline button → 2-step FSM) ---
         elif cmd == 'watch_add':
-            from telegram.handlers.watch_handler import handle_watch_add_channel, handle_watch_add_keyword
+            from telegram.handlers.watch_handler import (
+                handle_watch_add_channel,
+                handle_watch_add_keyword,
+            )
             step = state.get("step", "")
             if step == "channel":
                 await handle_watch_add_channel(event, state)

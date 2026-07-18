@@ -110,8 +110,8 @@ async def _show_preview_and_ask(event, info: dict, source_type: str, source_data
     )
     if is_large:
         text += (
-            f"⚠️ 此文件超过 2GB，非 Premium 账户转发/上传将受限\n"
-            f"5️⃣  压缩后下载（用 ffmpeg 缩小至 2GB 以内）\n"
+            "⚠️ 此文件超过 2GB，非 Premium 账户转发/上传将受限\n"
+            "5️⃣  压缩后下载（用 ffmpeg 缩小至 2GB 以内）\n"
         )
     text += f"\n回复数字 {'1-5' if is_large else '1-4'} 进行选择。"
 
