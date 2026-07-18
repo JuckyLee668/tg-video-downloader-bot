@@ -64,7 +64,7 @@ async def forward_link_handler(event, arg=None):
         await event.respond(f"❌ 获取失败: {e}")
 
 
-async def do_bf(event, target, indices_str=None, delete_after=False, exclude_large=False):
+async def do_bf(event, target, indices_str=None, delete_after=False, exclude_large=False, compress_large=False):
     if not tg_clients.user_client or not await tg_clients.user_client.is_user_authorized():
         await event.respond("❌ 用户客户端未登录。")
         return
@@ -116,8 +116,9 @@ async def do_bf(event, target, indices_str=None, delete_after=False, exclude_lar
                     f"⚠️ 检测到 {len(large_files)} 个文件超过 2GB，非会员无法转发。\n\n"
                     f"请选择处理方式：\n"
                     f"1️⃣ - 排除大于 2GB 的文件，继续转发其余文件\n"
-                    f"2️⃣ - 取消整个转发任务\n\n"
-                    f"请回复数字 1 或 2 进行选择。"
+                    f"2️⃣ - 取消整个转发任务\n"
+                    f"3️⃣ - 压缩大于 2GB 的文件后再转发\n\n"
+                    f"请回复数字 1-3 进行选择。"
                 )
                 return
 
@@ -125,6 +126,18 @@ async def do_bf(event, target, indices_str=None, delete_after=False, exclude_lar
     for msg in messages_to_forward:
         file_name = message_file_name(msg)
         display_name = f"[DEL]{file_name}" if delete_after else file_name
+
+        task_data = {
+            'original_file_name': file_name,
+            'forward_target': str(target),
+            'delete_after_forward': delete_after,
+            'caption': msg.message or "",
+            'access_hash': getattr(msg.chat, 'access_hash', None),
+            'requester_chat_id': event.chat_id
+        }
+        # Mark large files for compression if requested
+        if compress_large and msg.file and msg.file.size > 2000 * 1024 * 1024:
+            task_data['compress'] = True
 
         task = {
             'chat_id': str(event.chat_id),
@@ -135,19 +148,14 @@ async def do_bf(event, target, indices_str=None, delete_after=False, exclude_lar
             'channel_id': msg.chat_id,
             'channel_username': getattr(msg.chat, 'username', '') if msg.chat else '',
             'channel_title': getattr(msg.chat, 'title', '') if msg.chat else '',
-            'task_data': {
-                'original_file_name': file_name,
-                'forward_target': str(target),
-                'delete_after_forward': delete_after,
-                'caption': msg.message or "",
-                'access_hash': getattr(msg.chat, 'access_hash', None),
-                'requester_chat_id': event.chat_id
-            }
+            'task_data': task_data
         }
         await download_manager.add_task(task)
         added += 1
 
     if large_files and exclude_large:
         await event.respond(f"📥 已排除 {len(large_files)} 个超过 2GB 的文件，其余 {added} 个转发任务已加入队列。")
+    elif large_files and compress_large:
+        await event.respond(f"🗜️ {len(large_files)} 个大文件将在下载后压缩，共 {added} 个转发任务已加入队列。")
     else:
         await event.respond(f"📥 已添加 {added} 个转发任务到队列。")

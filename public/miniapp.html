@@ -766,6 +766,48 @@
                 </div>
             </div>
 
+            <!-- Large File Compression -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">📦 大文件处理</span>
+                </div>
+                <div class="space-y-3">
+                    <label class="flex items-center justify-between" style="min-height:44px">
+                        <span class="text-sm">启用大文件处理</span>
+                        <input type="checkbox" id="setting-lf-enabled" onchange="saveLargeFileSettings()" class="toggle-switch">
+                    </label>
+                    <div>
+                        <label class="text-sm" style="color:var(--tg-hint)">阈值 (MB): <span id="lf-threshold-val" class="font-bold" style="color:var(--tg-text)">2000</span></label>
+                        <input type="number" id="setting-lf-threshold" min="100" max="10000" value="2000"
+                               class="input-field" onblur="saveLargeFileSettings()" enterkeyhint="done">
+                    </div>
+                    <div>
+                        <label class="text-sm" style="color:var(--tg-hint)">处理方式</label>
+                        <select id="setting-lf-action" onchange="saveLargeFileSettings()" class="input-field">
+                            <option value="compress">🗜️ 自动压缩</option>
+                            <option value="skip">⏭️ 跳过</option>
+                            <option value="ask">❓ 询问</option>
+                        </select>
+                    </div>
+                    <div id="lf-crf-row">
+                        <label class="text-sm" style="color:var(--tg-hint)">CRF 画质: <span id="lf-crf-val" class="font-bold" style="color:var(--tg-text)">23</span></label>
+                        <input type="range" id="setting-lf-crf" min="0" max="51" value="23"
+                               oninput="document.getElementById('lf-crf-val').textContent=this.value"
+                               onchange="saveLargeFileSettings()">
+                        <div class="flex justify-between text-xs mt-0.5" style="color:var(--tg-hint)">
+                            <span>高质量 (0)</span>
+                            <span>平衡 (23)</span>
+                            <span>小文件 (51)</span>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="text-sm" style="color:var(--tg-hint)">最大码率 (可选, 如 "4000k")</label>
+                        <input type="text" id="setting-lf-bitrate" placeholder="留空使用 CRF 模式"
+                               class="input-field" onblur="saveLargeFileSettings()" enterkeyhint="done">
+                    </div>
+                </div>
+            </div>
+
             <div style="height:16px"></div>
         </div>
     </div>
@@ -1273,6 +1315,17 @@
                 document.getElementById('setting-aliyun-path').value = au.remote_path || '/video';
                 document.getElementById('setting-aliyun-delete').checked = au.delete_after_upload || false;
 
+                // Large file
+                const lf = data.large_file || {};
+                document.getElementById('setting-lf-enabled').checked = lf.enabled ?? true;
+                document.getElementById('setting-lf-threshold').value = lf.threshold_mb || 2000;
+                document.getElementById('lf-threshold-val').textContent = lf.threshold_mb || 2000;
+                document.getElementById('setting-lf-action').value = lf.action || 'ask';
+                document.getElementById('setting-lf-crf').value = lf.crf ?? 23;
+                document.getElementById('lf-crf-val').textContent = lf.crf ?? 23;
+                document.getElementById('setting-lf-bitrate').value = lf.max_bitrate || '';
+                toggleLfRows();
+
             } catch(e) { console.error('Settings load error:', e); }
         }
 
@@ -1390,6 +1443,39 @@
                             enabled: document.getElementById('setting-aliyun-enabled').checked,
                             remote_path: document.getElementById('setting-aliyun-path').value,
                             delete_after_upload: document.getElementById('setting-aliyun-delete').checked,
+                        })
+                    });
+                    showToast('已保存');
+                } catch(e) { showToast('❌ ' + e.message); }
+            }, 400);
+        }
+
+        // ── Large File Settings ──
+        function toggleLfRows() {
+            const action = document.getElementById('setting-lf-action').value;
+            document.getElementById('lf-crf-row').style.display = (action === 'compress') ? '' : 'none';
+            document.getElementById('lf-threshold-val').textContent = document.getElementById('setting-lf-threshold').value;
+        }
+        document.addEventListener('DOMContentLoaded', () => {
+            const lfActionEl = document.getElementById('setting-lf-action');
+            if (lfActionEl) lfActionEl.addEventListener('change', toggleLfRows);
+        });
+
+        let _lfSaveTimer;
+        async function saveLargeFileSettings() {
+            clearTimeout(_lfSaveTimer);
+            _lfSaveTimer = setTimeout(async () => {
+                haptic('light');
+                toggleLfRows();
+                try {
+                    await fetchApi('/config/large-file', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            enabled: document.getElementById('setting-lf-enabled').checked,
+                            threshold_mb: parseInt(document.getElementById('setting-lf-threshold').value),
+                            action: document.getElementById('setting-lf-action').value,
+                            crf: parseInt(document.getElementById('setting-lf-crf').value),
+                            max_bitrate: document.getElementById('setting-lf-bitrate').value || '',
                         })
                     });
                     showToast('已保存');

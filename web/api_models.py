@@ -94,6 +94,13 @@ class AliyunSettingsUpdate(BaseModel):
     remote_path: Optional[str] = None
     delete_after_upload: Optional[bool] = None
 
+class LargeFileSettingsUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    threshold_mb: Optional[int] = Field(default=None, ge=100, le=10000)
+    action: Optional[str] = None  # "compress" | "skip" | "ask"
+    crf: Optional[int] = Field(default=None, ge=0, le=51)
+    max_bitrate: Optional[str] = None
+
 class TaskIdRequest(BaseModel):
     task_id: str = Field(min_length=1, max_length=200)
 

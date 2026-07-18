@@ -93,19 +93,27 @@ async def _execute_auto(event, info: dict, source_type: str, source_data: dict, 
 
 async def _show_preview_and_ask(event, info: dict, source_type: str, source_data: dict):
     """交互模式：展示预览，询问操作。"""
+    filesize = info.get("filesize", 0) or 0
+    is_large = filesize > 2000 * 1024 * 1024
+
     text = (
         f"🎬 **{info['title']}**\n\n"
         f"⏱ 时长：{_format_duration(info['duration'])}\n"
         f"📐 分辨率：{info.get('resolution', '未知')}\n"
-        f"📦 大小：{_format_size(info['filesize'])}\n"
+        f"📦 大小：{_format_size(filesize)}\n"
         f"👤 来源：{info.get('uploader') or '未知'}\n\n"
         f"请选择操作：\n"
         f"1️⃣  仅下载到本地\n"
         f"2️⃣  下载并转发到频道\n"
         f"3️⃣  下载并上传云盘\n"
-        f"4️⃣  全部（下载 + 转发 + 云盘）\n\n"
-        f"回复数字 1-4 进行选择。"
+        f"4️⃣  全部（下载 + 转发 + 云盘）\n"
     )
+    if is_large:
+        text += (
+            f"⚠️ 此文件超过 2GB，非 Premium 账户转发/上传将受限\n"
+            f"5️⃣  压缩后下载（用 ffmpeg 缩小至 2GB 以内）\n"
+        )
+    text += f"\n回复数字 {'1-5' if is_large else '1-4'} 进行选择。"
 
     try:
         if info.get("thumbnail"):
@@ -145,6 +153,9 @@ async def handle_action_choice(event, state):
     elif choice == "4":
         await state_manager.update(event.chat_id, step="forward_target", action="all")
         await event.respond("📤 请输入转发目标（ID、@username 或链接）：")
+    elif choice == "5":
+        await state_manager.clear(event.chat_id)
+        await _enqueue_task(event, info, source_type, source_data, "download", compress=True)
     else:
         await event.respond("⚠️ 请回复数字 1-4 进行选择。")
 
@@ -161,7 +172,7 @@ async def handle_action_target(event, state):
 
 
 async def _enqueue_task(event, info: dict, source_type: str, source_data: dict,
-                        action: str, forward_target: str = ""):
+                        action: str, forward_target: str = "", compress: bool = False):
     """统一入队。"""
 
     title = info.get("title", "未知") or "未知"
@@ -173,6 +184,9 @@ async def _enqueue_task(event, info: dict, source_type: str, source_data: dict,
     task_data: dict = dict(source_data or {})
     task_data["requester_chat_id"] = event.chat_id
     task_data["action"] = action
+
+    if compress:
+        task_data["compress"] = True
 
     if forward_target:
         task_data["forward_target"] = str(forward_target)
@@ -210,5 +224,6 @@ async def _enqueue_task(event, info: dict, source_type: str, source_data: dict,
         "forward": f"📤 已加入队列：下载并转发\n🎬 `{file_name}`",
         "cloud": f"☁️ 已加入队列：下载并上传云盘\n🎬 `{file_name}`",
         "all": f"🔄 已加入队列：下载+转发+云盘\n🎬 `{file_name}`",
+        "compress": f"🗜️ 已加入队列：下载并压缩\n🎬 `{file_name}`",
     }
     await event.respond(labels.get(action, f"✅ 已加入队列\n🎬 `{file_name}`"))

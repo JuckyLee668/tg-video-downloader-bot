@@ -12,6 +12,7 @@ from core.config import config
 from core.database import db_manager
 from core.paths import safe_join_download_path
 from downloader.aliyundrive_uploader import aliyundrive_uploader
+from downloader.compressor import compressor
 from downloader.engine import download_engine
 from downloader.external import external_downloader
 
@@ -174,6 +175,14 @@ class DownloadManager:
                     progress_msg_ref=progress_msg_ref,
                 )
 
+            # ── Large file compression ────────────────────────────────
+            if config.large_file.enabled and actual_path.stat().st_size > config.large_file.threshold_mb * 1024 * 1024:
+                actual_path = await self._handle_large_file(
+                    actual_path, task, task_data,
+                    progress_msg_ref=progress_msg_ref,
+                    requester_id=requester_id,
+                )
+
             # ── Shared post-download pipeline ───────────────────────────
             await self._forward_if_requested(tg_clients, actual_path, task, task_data)
 
@@ -198,7 +207,7 @@ class DownloadManager:
                     )
 
             if local_enabled:
-                await self._auto_forward_to_local(tg_clients, actual_path, task)
+                await self._auto_forward_to_local(tg_clients, actual_path, task, task_data)
 
             # ── Cleanup: delete local file if configured ───────────
             should_delete = bool(task_data.get("delete_after_forward", False))
@@ -511,7 +520,71 @@ class DownloadManager:
 
         return new_path
 
-    async def _auto_forward_to_local(self, tg_clients, save_path: Path, task: Dict[str, Any]):
+    async def _handle_large_file(
+        self,
+        actual_path: Path,
+        task: Dict[str, Any],
+        task_data: Dict[str, Any],
+        progress_msg_ref=None,
+        requester_id=None,
+    ) -> Path:
+        """Check file size and apply configured large-file action.
+
+        Returns (possibly compressed) path.
+        """
+        threshold_bytes = config.large_file.threshold_mb * 1024 * 1024
+        if actual_path.stat().st_size <= threshold_bytes:
+            return actual_path
+
+        file_name = task.get("file_name", actual_path.name)
+        logger.info(
+            f"Large file detected: {file_name} "
+            f"({actual_path.stat().st_size / 1024 / 1024:.0f}MB > {config.large_file.threshold_mb}MB threshold)"
+        )
+
+        if not compressor.is_available():
+            logger.warning("ffmpeg not available, cannot compress large file")
+            return actual_path
+
+        # Explicit compress request (from interactive choice or forward handler)
+        if task_data.get("compress"):
+            action = "compress"
+        else:
+            action = config.large_file.action
+            # "ask" mode: in non-interactive contexts (batch/web), default to compress
+            if action == "ask":
+                action = "compress"
+
+        if action == "skip":
+            logger.info(f"Skipping compression for large file: {file_name}")
+            return actual_path
+
+        if action == "compress":
+            if requester_id and progress_msg_ref:
+                try:
+                    from telegram.client import tg_clients
+                    if tg_clients.bot_client:
+                        await tg_clients.bot_client.edit_message(
+                            requester_id,
+                            progress_msg_ref[0],
+                            f"🗜️ 正在压缩 `{file_name}` ...",
+                        )
+                except Exception:
+                    pass
+
+            target_size = config.large_file.threshold_mb * 1024 * 1024
+            actual_path = await compressor.compress_video(
+                str(actual_path),
+                target_size,
+                progress_callback=self.create_progress_callback(task["task_id"]),
+                crf=config.large_file.crf,
+                max_bitrate=config.large_file.max_bitrate,
+            )
+            logger.info(f"Compressed large file: {actual_path.name} ({actual_path.stat().st_size / 1024 / 1024:.0f}MB)")
+
+        return actual_path
+
+    async def _auto_forward_to_local(self, tg_clients, save_path: Path, task: Dict[str, Any], task_data: Dict[str, Any] = None):
         """下载完成后自动转发到配置的本地聊天"""
         target = config.local_forward.target_chat.strip()
         if not target:
@@ -526,10 +599,32 @@ class DownloadManager:
             if file_size > 2000 * 1024 * 1024:
                 me = await tg_clients.user_client.get_me()
                 if not getattr(me, "premium", False):
-                    logger.warning(
-                        f"File over 2GB and account not premium, skipping local forward: {save_path.name}"
-                    )
-                    return
+                    # Try compression if enabled and not already tried
+                    if config.large_file.enabled and compressor.is_available():
+                        already_compressed = (task_data or {}).get("compressed", False)
+                        if not already_compressed:
+                            logger.info(f"Compressing large file before local forward: {save_path.name}")
+                            save_path = await self._handle_large_file(save_path, task, task_data or {})
+                            if task_data is not None:
+                                task_data["compressed"] = True
+                            file_size = save_path.stat().st_size
+                            if file_size <= 2000 * 1024 * 1024:
+                                pass  # Proceed with forward
+                            else:
+                                logger.warning(
+                                    f"File still over 2GB after compression, skipping local forward: {save_path.name}"
+                                )
+                                return
+                        else:
+                            logger.warning(
+                                f"File still over 2GB after compression, skipping local forward: {save_path.name}"
+                            )
+                            return
+                    else:
+                        logger.warning(
+                            f"File over 2GB and account not premium, skipping local forward: {save_path.name}"
+                        )
+                        return
 
             video_attrs = self._video_attrs_cache.pop(task["task_id"], {})
             force_doc = task.get("media_type") == "document"
@@ -573,7 +668,28 @@ class DownloadManager:
             if file_size > 2000 * 1024 * 1024:
                 me = await tg_clients.user_client.get_me()
                 if not getattr(me, "premium", False):
-                    raise RuntimeError("File exceeds 2GB and the user account is not premium")
+                    # Try compression if enabled and not already attempted
+                    if config.large_file.enabled and compressor.is_available():
+                        already_compressed = task_data.get("compressed", False)
+                        if not already_compressed:
+                            logger.info(f"Compressing large file before forward: {save_path.name}")
+                            save_path = await self._handle_large_file(save_path, task, task_data)
+                            task_data["compressed"] = True
+                            file_size = save_path.stat().st_size
+                            if file_size <= 2000 * 1024 * 1024:
+                                pass  # Proceed with forward
+                            else:
+                                raise RuntimeError(
+                                    "File still exceeds 2GB after compression. "
+                                    "Try a lower CRF value in settings, or upgrade to Telegram Premium."
+                                )
+                        else:
+                            raise RuntimeError(
+                                "File still exceeds 2GB after compression. "
+                                "Try a lower CRF value in settings, or upgrade to Telegram Premium."
+                            )
+                    else:
+                        raise RuntimeError("File exceeds 2GB and the user account is not premium")
 
             force_doc = task.get("media_type") == "document"
             uploaded_file = await tg_clients.user_client.upload_file(

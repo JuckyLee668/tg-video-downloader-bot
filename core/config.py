@@ -62,6 +62,14 @@ class FileDedupConfig(BaseModel):
     by_message_id: bool = True   # 按 chat_id + message_id 去重
     by_file_id: bool = False     # 按 Telegram file_id 去重（更严格）
 
+class LargeFileConfig(BaseModel):
+    """大文件处理：超过阈值时使用 ffmpeg 压缩"""
+    enabled: bool = True                    # 是否启用大文件处理
+    threshold_mb: int = 2000               # 阈值 (MB)
+    action: str = "ask"                    # "compress" | "skip" | "ask"
+    crf: int = 23                          # ffmpeg CRF 值 (0-51, 越低质量越好)
+    max_bitrate: str = ""                  # 可选最大码率限制 (如 "4000k")
+
 class Config(BaseModel):
     bot_token: str = Field(default="")
     proxy: Optional[ProxyConfig] = None  # global proxy (default off)
@@ -92,6 +100,7 @@ class Config(BaseModel):
     local_forward: LocalForwardConfig = Field(default_factory=LocalForwardConfig)
     file_rename: FileRenameConfig = Field(default_factory=FileRenameConfig)
     file_dedup: FileDedupConfig = Field(default_factory=FileDedupConfig)
+    large_file: LargeFileConfig = Field(default_factory=LargeFileConfig)
     progress_notification: bool = Field(default=True)
 
     def save(self, config_path: str = "config.yaml"):

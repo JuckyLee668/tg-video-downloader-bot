@@ -67,3 +67,11 @@ file_dedup:
 
 # 下载进度推送通知
 progress_notification: true
+
+# 大文件处理 — 当文件超过 2GB 时可用 ffmpeg 压缩
+large_file:
+  enabled: true          # 是否启用大文件处理
+  threshold_mb: 2000     # 阈值 (MB), 超过此大小触发处理
+  action: ask            # "compress" 自动压缩 | "skip" 跳过下载 | "ask" 询问用户
+  crf: 23                # ffmpeg CRF 值 (0-51), 越低画质越好体积越大
+  max_bitrate: ''        # 可选最大码率限制 (如 "4000k"), 留空使用 CRF 模式

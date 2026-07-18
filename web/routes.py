@@ -30,6 +30,7 @@ from web.api_models import (
     ForwardRequest,
     HistoryDeleteRequest,
     JoinRequest,
+    LargeFileSettingsUpdate,
     LoginSendCodeRequest,
     LoginSignInRequest,
     ProxyConfigRequest,
@@ -160,6 +161,7 @@ async def get_config():
         "file_dedup": config.file_dedup.model_dump(),
         "aliyundrive_upload": config.aliyundrive_upload.model_dump(),
         "progress_notification": config.progress_notification,
+        "large_file": config.large_file.model_dump(),
         "batch_size": config.batch_size,
         "adaptive_concurrency": config.adaptive_concurrency,
         "always_fresh_download": config.always_fresh_download,
@@ -238,6 +240,20 @@ async def set_aliyun_settings(req: AliyunSettingsUpdate):
         return {"status": "success", "aliyundrive_upload": config.aliyundrive_upload.model_dump()}
     except Exception as e:
         logger.exception(f"Failed to set aliyun settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/config/large-file")
+async def set_large_file_settings(req: LargeFileSettingsUpdate):
+    try:
+        updates = req.model_dump(exclude_none=True, exclude_unset=True)
+        for key, value in updates.items():
+            if hasattr(config.large_file, key):
+                setattr(config.large_file, key, value)
+        config.save()
+        return {"status": "success", "large_file": config.large_file.model_dump()}
+    except Exception as e:
+        logger.exception(f"Failed to set large file settings: {e}")
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 

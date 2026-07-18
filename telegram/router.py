@@ -366,8 +366,11 @@ async def state_handler(event):
                 elif choice == '2':
                     await state_manager.clear(event.chat_id)
                     await event.respond("❌ 已取消整个转发任务。")
+                elif choice == '3':
+                    await state_manager.clear(event.chat_id)
+                    await forward.do_bf(event, target, indices, delete_after, compress_large=True)
                 else:
-                    await event.respond("⚠️ 无效输入，请回复数字 1（排除并继续）或 2（取消任务）。")
+                    await event.respond("⚠️ 无效输入，请回复数字 1（排除）、2（取消）或 3（压缩并转发）。")
 
         # --- AUTOFWD TARGET (inline button → FSM) ---
         elif cmd == 'autofwd_target':
