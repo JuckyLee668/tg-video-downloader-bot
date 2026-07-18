@@ -899,12 +899,37 @@
             return confirm(msg);
         }
 
+        // ── API Key fallback (desktop 浏览器没有 Telegram initData) ──
+        let webApiKey = localStorage.getItem('WEB_API_KEY') || '';
+        function promptForApiKey() {
+            const key = prompt('未检测到 Telegram 环境，请输入 WEB_API_KEY：', webApiKey || '');
+            if (!key) return false;
+            webApiKey = key;
+            localStorage.setItem('WEB_API_KEY', key);
+            return true;
+        }
+
         // ── API Helper ──
         async function fetchApi(path, options = {}) {
             const headers = { 'Content-Type': 'application/json', ...options.headers };
-            if (tg && tg.initData) headers['X-Telegram-Init-Data'] = tg.initData;
+            if (tg && tg.initData) {
+                headers['X-Telegram-Init-Data'] = tg.initData;
+            } else if (webApiKey) {
+                headers['X-API-Key'] = webApiKey;
+            }
             const res = await fetch('/api' + path, { ...options, headers });
             const data = await res.json();
+            if (res.status === 401) {
+                if (tg && tg.initData) throw new Error(data.detail || 'Auth Error');
+                // 桌面浏览器：弹框让用户输入 WEB_API_KEY
+                const ok = promptForApiKey();
+                if (!ok) throw new Error('需要 WEB_API_KEY 才能访问');
+                const retryHeaders = { 'Content-Type': 'application/json', ...options.headers, 'X-API-Key': webApiKey };
+                const retryRes = await fetch('/api' + path, { ...options, headers: retryHeaders });
+                const retryData = await retryRes.json();
+                if (!retryRes.ok) throw new Error(retryData.detail || 'API Error');
+                return retryData;
+            }
             if (!res.ok) throw new Error(data.detail || 'API Error');
             return data;
         }
