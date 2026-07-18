@@ -74,4 +74,5 @@ large_file:
   threshold_mb: 2000     # 阈值 (MB), 超过此大小触发处理
   action: ask            # "compress" 自动压缩 | "skip" 跳过下载 | "ask" 询问用户
   crf: 23                # ffmpeg CRF 值 (0-51), 越低画质越好体积越大
+  preset: fast           # ffmpeg preset: ultrafast/fast/medium/slow
   max_bitrate: ''        # 可选最大码率限制 (如 "4000k"), 留空使用 CRF 模式

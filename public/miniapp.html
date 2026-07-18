@@ -801,6 +801,16 @@
                         </div>
                     </div>
                     <div>
+                        <label class="text-sm" style="color:var(--tg-hint)">编码速度</label>
+                        <select id="setting-lf-preset" onchange="saveLargeFileSettings()" class="input-field">
+                            <option value="ultrafast">⚡ ultrafast (最快)</option>
+                            <option value="fast">🚀 fast (推荐)</option>
+                            <option value="medium">⚖️ medium (平衡)</option>
+                            <option value="slow">🐢 slow (高压缩)</option>
+                        </select>
+                        <p class="text-xs mt-1" style="color:var(--tg-hint)">越快 = 压缩时间越短，但文件稍大。fast 比 medium 快约 2 倍</p>
+                    </div>
+                    <div>
                         <label class="text-sm" style="color:var(--tg-hint)">最大码率 (可选, 如 "4000k")</label>
                         <input type="text" id="setting-lf-bitrate" placeholder="留空使用 CRF 模式"
                                class="input-field" onblur="saveLargeFileSettings()" enterkeyhint="done">
@@ -1323,6 +1333,7 @@
                 document.getElementById('setting-lf-action').value = lf.action || 'ask';
                 document.getElementById('setting-lf-crf').value = lf.crf ?? 23;
                 document.getElementById('lf-crf-val').textContent = lf.crf ?? 23;
+                document.getElementById('setting-lf-preset').value = lf.preset || 'fast';
                 document.getElementById('setting-lf-bitrate').value = lf.max_bitrate || '';
                 toggleLfRows();
 
@@ -1475,6 +1486,7 @@
                             threshold_mb: parseInt(document.getElementById('setting-lf-threshold').value),
                             action: document.getElementById('setting-lf-action').value,
                             crf: parseInt(document.getElementById('setting-lf-crf').value),
+                            preset: document.getElementById('setting-lf-preset').value,
                             max_bitrate: document.getElementById('setting-lf-bitrate').value || '',
                         })
                     });

@@ -68,6 +68,7 @@ class LargeFileConfig(BaseModel):
     threshold_mb: int = 2000               # 阈值 (MB)
     action: str = "ask"                    # "compress" | "skip" | "ask"
     crf: int = 23                          # ffmpeg CRF 值 (0-51, 越低质量越好)
+    preset: str = "fast"                   # ffmpeg preset: ultrafast/fast/medium/slow 等
     max_bitrate: str = ""                  # 可选最大码率限制 (如 "4000k")
 
 class Config(BaseModel):

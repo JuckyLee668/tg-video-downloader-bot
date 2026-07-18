@@ -565,6 +565,7 @@ class DownloadManager:
                 target_size,
                 progress_callback=self.create_progress_callback(task["task_id"]),
                 crf=config.large_file.crf,
+                preset=config.large_file.preset,
                 max_bitrate=config.large_file.max_bitrate,
             )
             logger.info(f"Compressed large file: {actual_path.name} ({actual_path.stat().st_size / 1024 / 1024:.0f}MB)")

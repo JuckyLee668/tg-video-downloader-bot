@@ -98,6 +98,7 @@ class VideoCompressor:
         target_size_bytes: int,
         progress_callback: Optional[Callable] = None,
         crf: int = 23,
+        preset: str = "fast",
         max_bitrate: str = "",
     ) -> Path:
         """Compress a video file to fit within target_size_bytes.
@@ -128,11 +129,11 @@ class VideoCompressor:
 
         if max_bitrate:
             await self._compress_with_bitrate(
-                str(original), str(temp_output), max_bitrate, progress_callback, loop
+                str(original), str(temp_output), max_bitrate, preset, progress_callback, loop
             )
         else:
             await self._compress_with_crf(
-                str(original), str(temp_output), crf, target_size_bytes, progress_callback, loop
+                str(original), str(temp_output), crf, target_size_bytes, preset, progress_callback, loop
             )
 
         # Verify output
@@ -165,14 +166,15 @@ class VideoCompressor:
         output_path: str,
         crf: int,
         target_size_bytes: int,
+        preset: str,
         progress_callback: Optional[Callable],
         loop,
     ):
         """Compress using CRF encoding. Retries with higher CRF if still too large (up to 3 attempts)."""
         current_crf = crf
         for attempt in range(3):
-            logger.info(f"CRF compression attempt {attempt + 1} (CRF={current_crf})")
-            await self._run_ffmpeg_crf(input_path, output_path, current_crf, progress_callback, loop)
+            logger.info(f"CRF compression attempt {attempt + 1} (CRF={current_crf}, preset={preset})")
+            await self._run_ffmpeg_crf(input_path, output_path, current_crf, preset, progress_callback, loop)
 
             out_path = Path(output_path)
             if not out_path.exists() or out_path.stat().st_size == 0:
@@ -199,6 +201,7 @@ class VideoCompressor:
         input_path: str,
         output_path: str,
         max_bitrate: str,
+        preset: str,
         progress_callback: Optional[Callable],
         loop,
     ):
@@ -212,7 +215,7 @@ class VideoCompressor:
             "-c:a", "aac",
             "-b:a", "128k",
             "-movflags", "+faststart",
-            "-preset", "medium",
+            "-preset", preset,
             "-progress", "pipe:1",
             "-nostats",
             output_path,
@@ -224,6 +227,7 @@ class VideoCompressor:
         input_path: str,
         output_path: str,
         crf: int,
+        preset: str,
         progress_callback: Optional[Callable],
         loop,
     ):
@@ -236,7 +240,7 @@ class VideoCompressor:
             "-c:a", "aac",
             "-b:a", "128k",
             "-movflags", "+faststart",
-            "-preset", "medium",
+            "-preset", preset,
             "-progress", "pipe:1",
             "-nostats",
             output_path,

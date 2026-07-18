@@ -99,6 +99,7 @@ class LargeFileSettingsUpdate(BaseModel):
     threshold_mb: Optional[int] = Field(default=None, ge=100, le=10000)
     action: Optional[str] = None  # "compress" | "skip" | "ask"
     crf: Optional[int] = Field(default=None, ge=0, le=51)
+    preset: Optional[str] = None  # ultrafast/fast/medium/slow
     max_bitrate: Optional[str] = None
 
 class TaskIdRequest(BaseModel):

@@ -558,6 +558,16 @@
                         </select>
                     </div>
                     <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Preset (speed vs compression)</label>
+                        <select id="setting-lf-preset" onchange="saveLargeFileSettings()" class="w-full px-3 py-2 border rounded">
+                            <option value="ultrafast">ultrafast (fastest)</option>
+                            <option value="fast">fast (recommended)</option>
+                            <option value="medium">medium (balanced)</option>
+                            <option value="slow">slow (best compression)</option>
+                        </select>
+                        <p class="text-xs text-gray-500 mt-1">fast is ~2x faster than medium with minimal size difference.</p>
+                    </div>
+                    <div>
                         <label class="block text-sm font-medium text-gray-700 mb-1">CRF Value (0-51): <span id="crf-val">23</span></label>
                         <input type="range" id="setting-lf-crf" min="0" max="51" value="23"
                                oninput="document.getElementById('crf-val').textContent=this.value"
@@ -1132,6 +1142,7 @@
                     crfEl.value = cfg.large_file.crf ?? 23;
                     document.getElementById('crf-val').textContent = cfg.large_file.crf ?? 23;
                 }
+                document.getElementById('setting-lf-preset').value = cfg.large_file.preset || 'fast';
                 document.getElementById('setting-lf-bitrate').value = cfg.large_file.max_bitrate || '';
             }
         }
@@ -1154,6 +1165,7 @@
                 threshold_mb: parseInt(document.getElementById('setting-lf-threshold').value),
                 action: document.getElementById('setting-lf-action').value,
                 crf: parseInt(document.getElementById('setting-lf-crf').value),
+                preset: document.getElementById('setting-lf-preset').value,
                 max_bitrate: document.getElementById('setting-lf-bitrate').value || '',
             };
             await fetchApi('/config/large-file', { method: 'POST', body: JSON.stringify(payload) });
