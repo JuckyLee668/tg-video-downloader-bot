@@ -5,7 +5,7 @@
 ## 功能
 
 - **Telegram Bot 控制**：私聊 Bot 即可登录、连接频道、搜索、下载和转发。
-- **Twitter/X 视频下载**：直接发送链接或 `/tw` 命令，自动解析并下载视频。
+- **Twitter/X 视频下载**：直接发送链接或 `/tw` 命令，自动解析并下载视频。支持 `x.com/i/web/status/…` 等 App 分享格式，链接前后带说明文字也能正确提取。
 - **统一交互选项**：收到任何视频均可选择：仅下载 / 转发到频道 / 上传云盘 / 全部。
 - **默认操作**：配置 `/autofwd` 后，收到视频自动执行预设操作，无需手动选择。
 - **Web 控制台**：默认监听 `127.0.0.1:8000`，可查看队列、历史、频道、本地文件和登录状态。
@@ -22,6 +22,8 @@
 - **阿里云盘上传**：下载完成后自动上传到阿里云盘指定目录。
 - **状态持久化**：交互状态和任务进度持久化到 SQLite，重启不丢失。
 - **Web API 安全**：生产环境强制设置 `WEB_API_KEY`；API key 使用常量时间比较，连续失败会临时锁定。
+- **登录防拦截**：验证码要求每位 +1 输入，Bot 自动减 1 还原（原样经 Telegram 回传会立即失效）；验证码过期自动补发新码。
+- **并发安全下载**：下载先写临时文件再原子落位，同名目标自动编号，多 worker 并发不会覆盖或产出损坏文件。
 - **代理支持**：支持 HTTP 和 SOCKS5，可为全局或用户客户端配置代理。
 
 ## 目录结构
@@ -72,10 +74,15 @@ web/                   FastAPI 应用、API 路由和请求模型
   server.py            FastAPI 应用创建
   routes.py            API 路由 (含 Telegram Mini App initData 验证)
   api_models.py        Pydantic 请求模型
+  qr_login.py          二维码扫码登录会话
 
 public/                Web 静态页面
   index.html           桌面版管理面板
   miniapp.html         Telegram Mini App 管理面板
+  vendor/              本地打包的前端依赖 (tailwind.css、telegram-web-app.js)
+
+package.json           前端构建脚本 (npm run build:css)
+tailwind.config.js     Tailwind 配置
 tests/                 pytest 测试
 data/                  SQLite 数据库、cookies 文件
 ```
@@ -318,6 +325,42 @@ user_api:
 
 `user_api.proxy` 优先级高于全局 `proxy`。
 
+## 登录
+
+用户客户端有两种登录方式，共用同一份会话文件 `session.txt`。登录成功后**重启服务不需要重新登录**，只有 `/logout` 会清除会话。
+
+### 手机号 + 验证码
+
+在 Bot 私聊发送 `/login`（或带参数 `/login +8613800138000`），按提示输入手机号（含国家码）。Telegram 会把验证码发到该账号的「Telegram」服务消息里。
+
+> ⚠️ **验证码必须每位 +1 后再发**
+>
+> Telethon 明确规定：验证码若原样经过 Telegram 会话回传会立即失效。因此 Bot 要求把每一位数字加 1 后发送，收到后自动减 1 还原：
+>
+> | 真实验证码 | 你需要发送 |
+> |---|---|
+> | `12345` | `23456` |
+> | `91234` | `02345`（9 + 1 进位到 0） |
+>
+> 空格会被忽略。忘记加 1 也没关系：Bot 先按「减 1」解析，被 Telegram 判为无效后会用原样再提交一次。
+
+其他行为：
+
+- **验证码过期**：Telegram 在新码发出后会立刻作废旧码，聊天里堆着多条时很容易取到旧的而显示「已过期」。Bot 会识别这种情况并**自动补发一条新码**，同时停留在「输入验证码」步骤，直接发最新那条即可，不必重新 `/login`。
+- **提示带发送时间**（北京时间），可与消息时间对照，确认用的是最新那条。
+- **两步验证**：账号开启 2FA 时会追问密码。
+- **输错可重试**：验证码不正确时登录状态保留，直接重发正确验证码即可。
+
+### 二维码扫码
+
+Web 控制台的登录面板会生成二维码，用手机 Telegram 扫码即可（设置 → 设备 → 扫描二维码）。
+
+手机号登录与二维码登录互斥：发起手机号登录会自动停止后台的二维码轮询，避免两者抢占同一个 auth key。
+
+### 登出
+
+Bot 中发送 `/logout`，或在 Web 控制台点击「退出登录」。登出会删除本地会话并丢弃客户端实例，下次登录自动创建全新客户端（修复了登出后无法再登录的问题）。
+
 ## Bot 命令
 
 | 命令 | 作用 | 子命令 |
@@ -326,6 +369,7 @@ user_api:
 | `/help` `/h` | 完整命令菜单 | — |
 | `/status` `/s` | 系统和任务状态 | — |
 | `/login` | 登录状态 / 登录账号 | 无参显示状态，有参开始登录 |
+| `/logout` | 退出登录并清除本地会话 | — |
 | `/channel` | 频道管理 | `connect @xx`、`list`。回复链接可直接添加 |
 | `/search` | 搜索频道媒体 | `keyword xx`、`recent [n]`、`time <开始> <结束>`、`history` |
 | `/download` | 批量下载 | `[序号]`、`format <格式> [序号]`。单选弹出交互选项 |
@@ -413,6 +457,19 @@ http://127.0.0.1:8000
 - 本地文件管理（查看/删除/清空）
 - 缩略图缓存管理
 
+### 前端样式
+
+Tailwind CSS 与 `telegram-web-app.js` 已打包进仓库 `public/vendor/`，运行时**不依赖任何 CDN**，离线或内网环境也能正常渲染。
+
+修改样式后需要重新构建：
+
+```bash
+npm install
+npm run build:css
+```
+
+等价于 `tailwindcss -i public/vendor/tailwind.src.css -o public/vendor/tailwind.css --minify`。
+
 ## Telegram Mini App
 
 Bot 输入框右侧常驻 **📊 管理面板** 按钮（MenuButton），或发送 `/panel` 命令，即可在 Telegram 内直接打开管理面板。无需离开聊天、无需输入 API Key。
@@ -487,9 +544,11 @@ ruff check core downloader telegram web tests
 
 ### 测试覆盖
 
+当前共 **249** 个用例。
+
 | 模块 | 文件 | 覆盖内容 |
 |------|------|----------|
-| `core/paths.py` | `test_paths.py` | 文件名净化、路径穿越防护 |
+| `core/paths.py` | `test_paths.py` | 文件名净化、路径穿越防护、临时文件与原子落位 |
 | `core/database.py` | `test_database.py` | 任务原子领取、完成归档 |
 | `core/config.py` | `test_config.py` | YAML/环境变量加载、配置默认值 |
 | `web/api_models.py` | `test_api_models.py` | 搜索/下载/转发/代理/登录模型验证 |
@@ -498,6 +557,9 @@ ruff check core downloader telegram web tests
 | `telegram/state_manager.py` | `test_state_manager.py` | FSM 状态读写、隔离、清除 |
 | `downloader/manager.py` | `test_resolve_forward_peer.py` | 转发目标解析（含消息 ID） |
 | `downloader/external.py` | `test_external_downloader.py` | Twitter URL 检测、信息提取 |
+| `downloader/external.py` | `test_link_detect.py` | X 分享链接识别、从带文字消息中提取 URL |
+| `telegram/client.py` | `test_login_code_shift.py` | 验证码 +1 偏移还原 |
+| 跨模块回归 | `test_regressions.py` | 登出后可重新登录、并发同名文件落位、搜索结果列表兜底、状态写锁 |
 
 ## CI
 
@@ -527,6 +589,9 @@ CI 会执行：
 
 检查 `.env` 中的 `USER_API_ID` 和 `USER_API_HASH`，然后在 Bot 私聊中执行 `/login`。
 
+- 提示「验证码已失效」：多半取用了聊天里较早的一条（Telegram 在新码发出后立刻作废旧码）。Bot 会自动补发新码，用**最新**那条即可。
+- 提示「验证码不正确」：确认发送的是每位 +1 之后的数字，而不是原码。
+
 ### Twitter 视频下载失败
 
 1. 确认 cookies 有效：`/login` 查看 "Twitter Cookies" 状态
@@ -554,6 +619,18 @@ CI 会执行：
 Bot Token：在 Telegram 中联系 `@BotFather`，使用 `/newbot` 创建。
 
 API ID / API Hash：访问 `https://my.telegram.org`，进入 API development tools 创建应用。
+
+## 更新日志
+
+完整改动见 [Releases](https://github.com/JuckyLee668/tg-video-downloader-bot/releases)。
+
+| 版本 | 主要变化 |
+|---|---|
+| v0.2.0 | 登录流程重做（验证码 +1 偏移、过期自动补发、登出后可重新登录）；并发同名下载不再覆盖与损坏；X 分享链接识别增强；前端依赖本地化 |
+| v0.1.1 | — |
+| v0.1.0 | 缩略图、自动监控、文件去重、智能重命名 |
+| v0.0.2 | — |
+| v0.0.1 | 首个发布 |
 
 ## 免责声明
 
