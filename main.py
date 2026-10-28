@@ -109,6 +109,16 @@ async def main():
                 logger.error(
                     "Auth key 已失效（IP 冲突），正在重置所有 session 并自动重连..."
                 )
+                # Stop the old uvicorn server and background tasks before
+                # re-initialising; otherwise the next loop tries to bind the
+                # same port while the old server is still running.
+                for pending in tasks:
+                    pending.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                try:
+                    await server.shutdown()
+                except Exception:
+                    pass
                 tg_clients.reset_bot_session()
                 tg_clients.reset_user_session()
                 # Disconnect any open connections before re-init
@@ -126,6 +136,10 @@ async def main():
                 logger.info("Shutting down application")
                 break
     finally:
+        # Compression/upload tasks live outside the worker pool; cancel them
+        # explicitly so shutdown cannot hang on a running ffmpeg job.
+        for bg_task in list(getattr(download_manager, "background_tasks", ())):
+            bg_task.cancel()
         for worker in download_manager.worker_tasks:
             worker.cancel()
         if download_manager.worker_tasks:

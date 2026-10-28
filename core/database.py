@@ -1,3 +1,5 @@
+import asyncio
+import functools
 import json
 import os
 from datetime import datetime
@@ -5,6 +7,23 @@ from typing import Any, Dict, List
 
 import aiosqlite
 from loguru import logger
+
+
+def _serialized(fn):
+    """Serialize a write method on the single shared connection.
+
+    All writers share one SQLite connection, so an explicit BEGIN/COMMIT in
+    one coroutine can otherwise swallow (or roll back) another coroutine's
+    statements.  The lock makes each write method atomic with respect to the
+    others.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(self, *args, **kwargs):
+        async with self._lock:
+            return await fn(self, *args, **kwargs)
+
+    return wrapper
 
 
 class DatabaseManager:
@@ -18,6 +37,7 @@ class DatabaseManager:
     def __init__(self, db_path: str = "data/telegram_downloader.db"):
         self.db_path = db_path
         self._conn: aiosqlite.Connection | None = None
+        self._lock = asyncio.Lock()
         db_dir = os.path.dirname(self.db_path)
         if db_dir:
             os.makedirs(db_dir, exist_ok=True)
@@ -53,6 +73,7 @@ class DatabaseManager:
                 priority INTEGER DEFAULT 0,
                 retry_count INTEGER DEFAULT 0,
                 max_retries INTEGER DEFAULT 3,
+                next_retry_at DATETIME,
                 error_message TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -128,6 +149,9 @@ class DatabaseManager:
         if "progress" not in columns:
             await db.execute("ALTER TABLE download_queue ADD COLUMN progress INTEGER DEFAULT 0")
             logger.info("Added progress column to download_queue")
+        if "next_retry_at" not in columns:
+            await db.execute("ALTER TABLE download_queue ADD COLUMN next_retry_at DATETIME")
+            logger.info("Added next_retry_at column to download_queue")
 
         # Indexes
         await db.execute("""
@@ -163,12 +187,42 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS watch_state (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 owner_chat_id TEXT NOT NULL,
-                channel_id TEXT UNIQUE NOT NULL,
+                channel_id TEXT NOT NULL,
                 last_read_id INTEGER DEFAULT 0,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(owner_chat_id, channel_id)
             )
         """)
+        # Migration: older schemas declared channel_id UNIQUE on its own, which
+        # prevented two owners from watching the same channel.  Rebuild the
+        # table when such an index is present.
+        cursor = await db.execute("PRAGMA index_list(watch_state)")
+        for idx in await cursor.fetchall():
+            if not idx[2]:  # not unique
+                continue
+            info_cursor = await db.execute(f"PRAGMA index_info('{idx[1]}')")
+            names = [row[2] for row in await info_cursor.fetchall()]
+            if names == ["channel_id"]:
+                logger.info("Migrating watch_state: removing global UNIQUE(channel_id)")
+                await db.execute("ALTER TABLE watch_state RENAME TO watch_state_old")
+                await db.execute("""
+                    CREATE TABLE watch_state (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        owner_chat_id TEXT NOT NULL,
+                        channel_id TEXT NOT NULL,
+                        last_read_id INTEGER DEFAULT 0,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(owner_chat_id, channel_id)
+                    )
+                """)
+                await db.execute("""
+                    INSERT OR IGNORE INTO watch_state
+                        (owner_chat_id, channel_id, last_read_id, updated_at)
+                    SELECT owner_chat_id, channel_id, last_read_id, updated_at
+                    FROM watch_state_old
+                """)
+                await db.execute("DROP TABLE watch_state_old")
+                break
         # Reset stale in-flight tasks
         await db.execute("UPDATE download_queue SET status = 'pending' WHERE status = 'downloading'")
         await db.execute("UPDATE forwarded_queue SET status = 'pending' WHERE status = 'downloading'")
@@ -182,6 +236,17 @@ class DatabaseManager:
             self._conn = None
             logger.info("Database connection closed")
 
+    async def execute_write(self, sql: str, params: tuple = ()):
+        """Run one write statement under the shared writer lock.
+
+        Used by modules that need to write through db_manager without owning a
+        decorated method (e.g. the FSM state store): an unlocked COMMIT can
+        otherwise land inside another coroutine's BEGIN/COMMIT window.
+        """
+        async with self._lock:
+            await self._db.execute(sql, params)
+            await self._db.commit()
+
     @property
     def _db(self) -> aiosqlite.Connection:
         """The single persistent connection (must call init() first)."""
@@ -191,6 +256,7 @@ class DatabaseManager:
 
     # ── download queue ────────────────────────────────────────────────
 
+    @_serialized
     async def add_download_task(self, task: Dict[str, Any]):
         task_id = f"{task.get('chat_id', 'unknown')}_{task.get('message_id', 'unknown')}"
         task_data = json.dumps(task.get("task_data", {}), ensure_ascii=False)
@@ -245,6 +311,7 @@ class DatabaseManager:
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
+    @_serialized
     async def claim_next_task(self):
         """Atomically claim the next pending task. Returns None when idle."""
         db = self._db
@@ -252,8 +319,9 @@ class DatabaseManager:
         try:
             cursor = await db.execute("""
                 SELECT task_id FROM download_queue
-                WHERE status = 'pending'
-                   OR (status = 'failed' AND retry_count < max_retries)
+                WHERE (status = 'pending'
+                   OR (status = 'failed' AND retry_count < max_retries))
+                  AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP)
                 ORDER BY priority DESC, created_at ASC
                 LIMIT 1
             """)
@@ -279,47 +347,95 @@ class DatabaseManager:
             claimed = await cursor.fetchone()
             await db.commit()
             return dict(claimed) if claimed else None
-        except Exception:
-            await db.rollback()
-            raise
+        except Exception as e:
+            logger.error(f"claim_next_task failed: {e}")
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            return None
 
     async def get_task_by_id(self, task_id: str):
         cursor = await self._db.execute("SELECT * FROM download_queue WHERE task_id = ?", (task_id,))
         row = await cursor.fetchone()
         return dict(row) if row else None
 
+    async def get_active_downloading(self, limit: int = 10):
+        limit = max(1, min(100, int(limit)))
+        cursor = await self._db.execute(
+            "SELECT * FROM download_queue WHERE status = 'downloading' LIMIT ?", (limit,)
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    @_serialized
+    async def retry_failed_tasks(self):
+        cursor = await self._db.execute("""
+            UPDATE download_queue
+            SET status = 'pending', retry_count = 0, next_retry_at = NULL,
+                error_message = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'failed'
+        """)
+        await self._db.commit()
+        return cursor.rowcount
+
+    @_serialized
     async def update_task_status(self, task_id: str, status: str, error_message: str = None):
         db = self._db
         if status == "downloading":
             await db.execute("""
                 UPDATE download_queue
-                SET status = ?, started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                SET status = ?, started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
+                    next_retry_at = NULL
                 WHERE task_id = ? AND status != 'downloading'
             """, (status, task_id))
         elif status == "completed":
             await db.execute("""
                 UPDATE download_queue
-                SET status = ?, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                SET status = ?, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
+                    next_retry_at = NULL
                 WHERE task_id = ?
             """, (status, task_id))
         elif status == "failed":
+            # Exponential-ish backoff so a transient failure cannot hot-loop.
             await db.execute("""
                 UPDATE download_queue
                 SET status = ?, error_message = ?, retry_count = retry_count + 1,
+                    next_retry_at = datetime('now', '+' || (10 * (retry_count + 1)) || ' seconds'),
                     updated_at = CURRENT_TIMESTAMP
                 WHERE task_id = ?
             """, (status, error_message, task_id))
         else:
             await db.execute("""
                 UPDATE download_queue
-                SET status = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP
+                SET status = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP,
+                    next_retry_at = NULL
                 WHERE task_id = ?
             """, (status, error_message, task_id))
         await db.commit()
 
-    async def requeue_task(self, task_id: str, error_message: str = None):
-        await self.update_task_status(task_id, "pending", error_message)
+    @_serialized
+    async def requeue_task(self, task_id: str, error_message: str = None, delay_seconds: int = 0):
+        """Put a task back in the queue, optionally delaying when it is eligible."""
+        delay_seconds = max(0, int(delay_seconds or 0))
+        if delay_seconds:
+            await self._db.execute("""
+                UPDATE download_queue
+                SET status = 'pending', error_message = ?,
+                    next_retry_at = datetime('now', ?),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE task_id = ?
+            """, (error_message, f"+{delay_seconds} seconds", task_id))
+        else:
+            await self._db.execute("""
+                UPDATE download_queue
+                SET status = 'pending', error_message = ?,
+                    next_retry_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE task_id = ?
+            """, (error_message, task_id))
+        await self._db.commit()
 
+    @_serialized
     async def update_task_progress(self, task_id: str, progress: int):
         progress = max(0, min(100, int(progress)))
         db = self._db
@@ -330,11 +446,13 @@ class DatabaseManager:
         """, (progress, task_id, progress))
         await db.commit()
 
+    @_serialized
     async def delete_download_task(self, task_id: str):
         db = self._db
         await db.execute("DELETE FROM download_queue WHERE task_id = ?", (task_id,))
         await db.commit()
 
+    @_serialized
     async def complete_download_task(self, task: Dict[str, Any], completion_record: Dict[str, Any]):
         task_id = task.get("task_id")
         task_data = self._json_dump(task.get("task_data", "{}"))
@@ -350,6 +468,7 @@ class DatabaseManager:
             await db.rollback()
             raise
 
+    @_serialized
     async def add_download_history(self, record: Dict[str, Any]):
         task_data = self._json_dump(record.get("task_data", {}))
         db = self._db
@@ -410,6 +529,7 @@ class DatabaseManager:
         )
         return [dict(row) for row in await cursor.fetchall()]
 
+    @_serialized
     async def delete_history_items(self, ids: List[int]):
         clean_ids = [int(item) for item in ids if int(item) > 0]
         if not clean_ids:
@@ -419,12 +539,14 @@ class DatabaseManager:
         await self._db.commit()
         return cursor.rowcount
 
+    @_serialized
     async def clear_history(self):
         await self._db.execute("DELETE FROM download_history")
         await self._db.commit()
 
     # ── channels ──────────────────────────────────────────────────────
 
+    @_serialized
     async def connect_channel(self, channel_id: str, username: str = None, title: str = None):
         db = self._db
         await db.execute("""
@@ -442,12 +564,14 @@ class DatabaseManager:
         cursor = await self._db.execute("SELECT * FROM connected_channels ORDER BY last_connected_at DESC")
         return [dict(row) for row in await cursor.fetchall()]
 
+    @_serialized
     async def delete_connected_channel(self, channel_id: str):
         await self._db.execute("DELETE FROM connected_channels WHERE channel_id = ?", (str(channel_id),))
         await self._db.commit()
 
     # ── cancel / clear ────────────────────────────────────────────────
 
+    @_serialized
     async def cancel_tasks(self, chat_id: str):
         db = self._db
         await db.execute("""
@@ -459,6 +583,7 @@ class DatabaseManager:
         """, (str(chat_id), str(chat_id)))
         await db.commit()
 
+    @_serialized
     async def cancel_all_tasks(self):
         db = self._db
         await db.execute("""
@@ -468,6 +593,7 @@ class DatabaseManager:
         """)
         await db.commit()
 
+    @_serialized
     async def clear_pending_tasks(self):
         cursor = await self._db.execute("DELETE FROM download_queue WHERE status != 'downloading'")
         await self._db.commit()
@@ -503,6 +629,7 @@ class DatabaseManager:
 
     # ── watch rules ───────────────────────────────────────────────────
 
+    @_serialized
     async def add_watch_rule(self, owner_chat_id: str, channel_id: str, channel_title: str = "", keyword: str = "", media_type: str = ""):
         cursor = await self._db.execute(
             "INSERT INTO watch_rules (owner_chat_id, channel_id, channel_title, keyword, media_type) VALUES (?, ?, ?, ?, ?)",
@@ -521,6 +648,7 @@ class DatabaseManager:
             cursor = await self._db.execute("SELECT * FROM watch_rules ORDER BY created_at DESC")
         return [dict(r) for r in await cursor.fetchall()]
 
+    @_serialized
     async def delete_watch_rule(self, rule_id: int, owner_chat_id: str = None):
         if owner_chat_id:
             await self._db.execute(
@@ -531,6 +659,7 @@ class DatabaseManager:
             await self._db.execute("DELETE FROM watch_rules WHERE id = ?", (rule_id,))
         await self._db.commit()
 
+    @_serialized
     async def toggle_watch_rule(self, rule_id: int, enabled: bool):
         await self._db.execute(
             "UPDATE watch_rules SET enabled = ? WHERE id = ?",
@@ -538,12 +667,25 @@ class DatabaseManager:
         )
         await self._db.commit()
 
-    async def get_watch_state(self, channel_id: str):
-        cursor = await self._db.execute(
-            "SELECT * FROM watch_state WHERE channel_id = ?", (str(channel_id),)
-        )
+    async def get_watch_state(self, channel_id: str, owner_chat_id: str | None = None):
+        """Read the watch cursor.
+
+        The state table is keyed by (owner_chat_id, channel_id); filtering by
+        channel alone returns an arbitrary owner's row when two owners watch
+        the same channel.
+        """
+        if owner_chat_id is not None:
+            cursor = await self._db.execute(
+                "SELECT * FROM watch_state WHERE channel_id = ? AND owner_chat_id = ?",
+                (str(channel_id), str(owner_chat_id)),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT * FROM watch_state WHERE channel_id = ?", (str(channel_id),)
+            )
         return await cursor.fetchone()
 
+    @_serialized
     async def update_watch_state(self, owner_chat_id: str, channel_id: str, last_read_id: int):
         await self._db.execute("""
             INSERT INTO watch_state (owner_chat_id, channel_id, last_read_id, updated_at)
@@ -590,7 +732,10 @@ class DatabaseManager:
             task.get("file_name"),
             task.get("media_type"),
             task.get("file_size", 0),
-            str(task.get("chat_id", "")),
+            # Dedup key is the source channel + message, not the user's private
+            # chat with the bot.  Keep `chat_id` as the source chat here so the
+            # UNIQUE(chat_id, message_id) constraint is meaningful.
+            str(task.get("channel_id") or task.get("chat_id", "")),
             str(task.get("message_id", "")),
             str(task.get("channel_id", "")),
             task.get("channel_username", ""),

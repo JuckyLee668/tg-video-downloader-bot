@@ -309,6 +309,7 @@ async def _cmd_login_async(event):
         # 逐行读取输出，拿到登录 URL 后立即展示
         output_lines = []
         qr_url = ""
+        timed_out = False
         try:
             while True:
                 line = await asyncio.wait_for(
@@ -332,20 +333,12 @@ async def _cmd_login_async(event):
                     if qr_url:
                         break
         except asyncio.TimeoutError:
-            pass  # 10s内没新行，用已读取的内容
-
-        # 清理进程
-        if proc.returncode is None:
-            try:
-                proc.terminate()
-                await asyncio.wait_for(proc.wait(), timeout=3)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+            timed_out = True  # 10s内没新行，用已读取的内容
 
         if qr_url:
+            # Keep the process alive while the user scans the QR code.
+            if proc.returncode is None:
+                asyncio.create_task(_watch_login_process(proc, event))
             text = (
                 "🔑 **登录阿里云盘**\n\n"
                 f"请打开以下链接扫码登录：\n"
@@ -354,9 +347,20 @@ async def _cmd_login_async(event):
                 "登录完成后点击 **📊 状态** 按钮验证。"
             )
         else:
+            # 清理进程
+            if proc.returncode is None:
+                try:
+                    proc.terminate()
+                    await asyncio.wait_for(proc.wait(), timeout=3)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
             all_output = "\n".join(output_lines) if output_lines else "(无输出)"
+            prefix = "⏱️ 登录超时（未收到二维码链接）。\n\n" if timed_out else ""
             text = (
-                "🔑 **登录阿里云盘**\n\n"
+                f"{prefix}🔑 **登录阿里云盘**\n\n"
                 "未能获取登录二维码链接。\n"
                 "请通过 SSH 手动运行 `aliyunpan login` 登录。\n\n"
                 f"输出:\n`{all_output[:300]}`"
@@ -425,6 +429,28 @@ async def _cmd_tree_inline(event, path: str):
         await event.edit(f"❌ {e}", buttons=_aliyun_keyboard())
 
 
+async def _watch_login_process(proc, event):
+    """Wait for an interactive `aliyunpan login` process and report the result."""
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=180)
+        if proc.returncode == 0:
+            msg = "✅ 阿里云盘登录成功。"
+        else:
+            msg = f"❌ 登录进程已退出 (code={proc.returncode})，请重试。"
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        msg = "⏱️ 登录超时（180s），请重新发送 `/aliyun login`。"
+    except Exception as e:
+        msg = f"❌ 登录进程出错: {e}"
+    try:
+        await event.respond(msg)
+    except Exception:
+        logger.debug("Could not report aliyun login result to the user")
+
+
 async def _cmd_login(event):
     """扫码登录。读取增量输出获取登录链接。"""
     bin_path = _find_aliyunpan()
@@ -445,6 +471,7 @@ async def _cmd_login(event):
 
         output_lines = []
         qr_url = ""
+        timed_out = False
         try:
             while True:
                 line = await asyncio.wait_for(proc.stdout.readline(), timeout=10.0)
@@ -464,19 +491,23 @@ async def _cmd_login(event):
                     if qr_url:
                         break
         except asyncio.TimeoutError:
-            pass
-
-        if proc.returncode is None:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
+            timed_out = True
 
         if qr_url:
+            # Keep the login process alive: it must stay running while the user
+            # scans the QR code, otherwise the confirmation cannot be applied.
+            if proc.returncode is None:
+                asyncio.create_task(_watch_login_process(proc, event))
             text = f"🔑 **登录阿里云盘**\n\n请打开链接扫码:\n[点此打开登录页面]({qr_url})\n\n登录完成后发送 `/aliyun` 查看状态。"
         else:
+            if proc.returncode is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
             all_output = "\n".join(output_lines) if output_lines else "(无输出)"
-            text = f"🔑 **登录阿里云盘**\n\n未能获取登录链接。请通过 SSH 运行 `aliyunpan login`。\n\n输出:\n`{all_output[:300]}`"
+            prefix = "⏱️ 登录超时（未收到二维码链接）。\n\n" if timed_out else ""
+            text = f"{prefix}🔑 **登录阿里云盘**\n\n未能获取登录链接。请通过 SSH 运行 `aliyunpan login`。\n\n输出:\n`{all_output[:300]}`"
 
         await event.respond(text, link_preview=True)
     except Exception as e:
@@ -589,10 +620,26 @@ def _aliyun_keyboard():
 
 async def _show_inline_menu(event):
     """显示内联键盘主菜单"""
-    await event.respond(
-        _aliyun_status_text() + "\n\n💡 选择操作：",
-        buttons=_aliyun_keyboard(),
+    who_out = ""
+    quota_out = ""
+    if _find_aliyunpan():
+        _, who_out = await _run_aliyunpan("who")
+        _, quota_out = await _run_aliyunpan("quota")
+    login_status = "✅ 已登录" if ("当前帐号" in who_out or "昵称" in who_out) else "❌ 未登录"
+    cfg = config.aliyundrive_upload
+    upload_status = "🟢 已启用" if cfg.enabled else "🔴 已禁用"
+    text = (
+        f"☁️ **阿里云盘**\n\n"
+        f"登录状态: {login_status}\n"
+        f"自动上传: {upload_status}\n"
+        f"上传目录: `{cfg.remote_path}`\n"
     )
+    if quota_out:
+        text += f"\n📊 **配额**\n`{quota_out[:300]}`\n"
+    if who_out:
+        text += f"\n👤 **账号**\n`{who_out[:300]}`\n"
+    text += "\n💡 选择操作："
+    await event.respond(text, buttons=_aliyun_keyboard())
 
 
 async def aliyun_callback_handler(event):

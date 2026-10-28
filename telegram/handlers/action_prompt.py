@@ -176,7 +176,7 @@ async def _enqueue_task(event, info: dict, source_type: str, source_data: dict,
     """统一入队。"""
 
     title = info.get("title", "未知") or "未知"
-    ext = info.get("ext", "mp4") or "mp4"
+    ext = str(info.get("ext", "mp4") or "mp4").lstrip(".")
     # Truncate long titles (e.g. full tweet text) to avoid filesystem name-too-long errors
     safe_title = _truncate_filename(title, max_bytes=200)
     file_name = f"{safe_title}.{ext}"
@@ -208,7 +208,7 @@ async def _enqueue_task(event, info: dict, source_type: str, source_data: dict,
         "chat_id": str(event.chat_id),
         "message_id": task_id_prefix,
         "file_name": file_name,
-        "media_type": "video",
+        "media_type": info.get("media_type", "video") or "video",
         "file_size": info.get("filesize", 0) or 0,
         "channel_id": _sd.get("channel_id", str(event.chat_id)),
         "task_data": task_data,

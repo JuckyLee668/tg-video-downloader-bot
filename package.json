@@ -1,0 +1,12 @@
+{
+  "name": "tg-video-downloader-bot-ui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Frontend build for the dashboard and Telegram Mini App (Tailwind CSS is bundled locally, no CDN at runtime).",
+  "scripts": {
+    "build:css": "tailwindcss -i ./public/vendor/tailwind.src.css -o ./public/vendor/tailwind.css --minify"
+  },
+  "devDependencies": {
+    "tailwindcss": "3.4.17"
+  }
+}

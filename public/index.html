@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>TG Media Downloader Dashboard</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/vendor/tailwind.css">
     <style>
         :root {
             --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -103,6 +103,7 @@
         .badge-red { background: #fee2e2; color: #b91c1c; }
         .badge-gray { background: #f3f4f6; color: #4b5563; }
         .badge-orange { background: #fff7ed; color: #c2410c; }
+        .badge-purple { background: #ede9fe; color: #6d28d9; }
 
         /* ── Touch-friendly buttons ── */
         .btn-touch {
@@ -337,13 +338,19 @@
                                 </div>
                             </div>
                             <div class="text-[10px] bg-green-50 text-green-700 px-2 py-1 rounded border border-green-100 inline-block">Authenticated</div>
+                            <button onclick="logoutUser()" class="block text-xs text-red-500 hover:text-red-700 underline">退出登录 / 切换账号</button>
                         </div>
                         <div id="login-form" class="hidden space-y-2">
-                            <p class="text-xs text-gray-500 mb-2">Please login to your Telegram account</p>
-                            <input type="text" id="login-phone" placeholder="+86138..." class="w-full px-3 py-2 border rounded text-sm">
-                            <button onclick="sendCode()" class="w-full bg-green-500 text-white py-2 rounded hover:bg-green-600 transition">Send Code</button>
+                            <button onclick="startQrLogin()" class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition">📱 扫码登录（推荐）</button>
+                            <p class="text-[10px] text-gray-400">会在新标签打开二维码页面，用手机 Telegram 扫码即可，不需要验证码。</p>
+                            <div class="border-t pt-2 mt-1 space-y-2">
+                                <p class="text-[10px] text-gray-400">或使用手机号 + 验证码登录（需能收到站内验证码）</p>
+                                <input type="text" id="login-phone" placeholder="+86138..." class="w-full px-3 py-2 border rounded text-sm">
+                                <button onclick="sendCode()" class="w-full bg-green-500 text-white py-2 rounded hover:bg-green-600 transition">Send Code</button>
+                            </div>
                             <div id="code-entry" class="hidden space-y-2 mt-2">
                                 <input type="text" id="login-code" placeholder="Verification Code" class="w-full px-3 py-2 border rounded text-sm">
+                                <input type="password" id="login-password" placeholder="两步验证密码（如已开启）" class="hidden w-full px-3 py-2 border rounded text-sm">
                                 <button onclick="signIn()" class="w-full bg-indigo-500 text-white py-2 rounded hover:bg-indigo-600 transition">Sign In</button>
                                 <p class="text-[10px] text-gray-400 italic mt-1">Enter the code exactly as received.</p>
                             </div>
@@ -375,7 +382,10 @@
                             <div class="text-xs text-gray-500" id="m-username">--</div>
                         </div>
                     </div>
-                    <div id="m-no-login" class="hidden text-sm text-orange-700 bg-orange-50 p-3 rounded-lg">⚠️ 未登录，请发送 /login</div>
+                    <div id="m-no-login" class="hidden text-sm text-orange-700 bg-orange-50 p-3 rounded-lg">
+                        ⚠️ 未登录
+                        <button onclick="startQrLogin()" class="ml-1 underline font-medium">扫码登录</button>
+                    </div>
                 </div>
 
                 <!-- Search Section -->
@@ -817,11 +827,13 @@
             }
             el.innerHTML = queue.map(t => {
                 const statusBadge = t.status === 'downloading' ? 'badge-blue' :
+                    t.status === 'forwarding' ? 'badge-purple' :
                     t.status === 'failed' ? 'badge-red' : t.status === 'completed' ? 'badge-green' : 'badge-gray';
-                const statusLabel = t.status === 'downloading' ? '下载中' : t.status === 'failed' ? '失败' :
+                const statusLabel = t.status === 'downloading' ? '下载中' :
+                    t.status === 'forwarding' ? '转发中' : t.status === 'failed' ? '失败' :
                     t.status === 'completed' ? '完成' : '排队';
-                const pgColor = t.status === 'failed' ? '#ef4444' : t.status === 'downloading' ? '#3b82f6' : '#22c55e';
-                const progressHtml = (t.status === 'downloading' || t.status === 'failed') ? `
+                const pgColor = t.status === 'failed' ? '#ef4444' : t.status === 'downloading' ? '#3b82f6' : t.status === 'forwarding' ? '#8b5cf6' : '#22c55e';
+                const progressHtml = (t.status === 'downloading' || t.status === 'forwarding' || t.status === 'failed') ? `
                     <div class="w-full bg-gray-200 rounded-full h-1 mt-1.5">
                         <div class="h-1 rounded-full" style="width:${t.progress||0}%;background:${pgColor}"></div>
                     </div>
@@ -920,12 +932,12 @@
         // ── Search ──
         async function searchRecent() {
             const mediaType = document.getElementById('search-media-type').value;
-            const data = await fetchApi('/search/recent', { method: 'POST', body: JSON.stringify({ limit: 1000, media_type: mediaType }) });
+            const data = await fetchApi('/search/recent', { method: 'POST', body: JSON.stringify({ limit: 100, media_type: mediaType }) });
             renderResults(data);
         }
         async function searchRecentM() {
             const mediaType = document.getElementById('m-search-media-type').value;
-            const data = await fetchApi('/search/recent', { method: 'POST', body: JSON.stringify({ limit: 200, media_type: mediaType }) });
+            const data = await fetchApi('/search/recent', { method: 'POST', body: JSON.stringify({ limit: 60, media_type: mediaType }) });
             renderResults(data);
         }
         async function searchKeyword() {
@@ -1350,9 +1362,44 @@
         async function signIn() {
             const code = document.getElementById('login-code').value;
             if (!code) return alert("Please enter code");
-            await fetchApi('/login/sign-in', { method: 'POST', body: JSON.stringify({ code }) });
+            const pwEl = document.getElementById('login-password');
+            const payload = { code };
+            if (pwEl && !pwEl.classList.contains('hidden') && pwEl.value) {
+                payload.password = pwEl.value;
+            }
+            try {
+                await fetchApi('/login/sign-in', { method: 'POST', body: JSON.stringify(payload) });
+            } catch (err) {
+                if (String(err.message || '').includes('两步验证')) {
+                    pwEl.classList.remove('hidden');
+                    pwEl.focus();
+                    showToast('请输入两步验证密码');
+                    return;
+                }
+                return;
+            }
             alert('Signed in successfully!');
             await checkLoginStatus();
+        }
+
+        function startQrLogin() {
+            // Open the tab synchronously, otherwise popup blockers eat it.
+            const win = window.open('', '_blank');
+            fetchApi('/login/qr/start', { method: 'POST' })
+                .then(res => {
+                    if (win) win.location = res.page;
+                    else window.location = res.page;
+                    showToast('请用手机 Telegram 扫码');
+                })
+                .catch(() => { if (win) win.close(); });
+        }
+
+        async function logoutUser() {
+            if (!confirm('确定退出登录？该会话会在 Telegram 服务器上终止，之后需要重新扫码。')) return;
+            await fetchApi('/logout', { method: 'POST' });
+            showToast('已退出登录');
+            await checkLoginStatus();
+            checkLoginM();
         }
 
         function startApp() {

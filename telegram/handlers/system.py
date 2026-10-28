@@ -1,6 +1,5 @@
 import os
 
-import aiosqlite
 from telethon import Button
 
 from core.config import config
@@ -53,10 +52,7 @@ async def status_handler(event, arg=None):
     summary = await db_manager.get_stats_summary()
 
     # 获取数据库活跃任务
-    async with aiosqlite.connect(db_manager.db_path) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute("SELECT * FROM download_queue WHERE status = 'downloading' LIMIT 10")
-        active_tasks = await cursor.fetchall()
+    active_tasks = await db_manager.get_active_downloading(10)
 
     status_text = (
         "📊 **当前系统状态:**\n\n"
@@ -93,19 +89,27 @@ def _get_mini_app_url() -> str:
 async def panel_handler(event, arg=None):
     """打开 Web 管理面板（Telegram Mini App）。"""
     url = _get_mini_app_url()
-    await event.respond(
+    text = (
         "📊 **TG Media Downloader 管理面板**\n\n"
-        "点击下方按钮在 Telegram 内打开管理面板：\n"
         "• 查看/搜索频道媒体\n"
         "• 管理下载队列\n"
         "• 浏览本地文件\n"
         "• 查看下载历史\n\n"
-        "💡 也可在浏览器中打开桌面版面板。",
-        buttons=[
+    )
+    # Inline keyboard URL buttons must be HTTPS for Telegram to accept them.
+    if url.lower().startswith("https://"):
+        buttons = [
             [Button.url("📊 打开管理面板", url)],
             [Button.inline("🌐 桌面版面板地址", b"panel:desktop_url")],
-        ],
-    )
+        ]
+        text += "点击下方按钮在 Telegram 内打开管理面板。"
+    else:
+        buttons = [[Button.inline("🌐 面板地址", b"panel:desktop_url")]]
+        text += (
+            "⚠️ 当前面板地址不是 HTTPS，Telegram 不允许作为 Mini App 打开。\n"
+            f"请用浏览器访问：`{url.replace('/miniapp.html', '')}`"
+        )
+    await event.respond(text, buttons=buttons)
 
 
 async def panel_callback_handler(event):

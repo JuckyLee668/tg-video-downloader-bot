@@ -24,15 +24,13 @@ class StateManager:
             return
         from core.database import db_manager
 
-        db = db_manager._db
-        await db.execute("""\
+        await db_manager.execute_write("""\
             CREATE TABLE IF NOT EXISTS user_states (
                 chat_id INTEGER PRIMARY KEY,
                 state_json TEXT NOT NULL,
                 updated_at REAL NOT NULL
             )
         """)
-        await db.commit()
         self._initialized = True
 
     async def set(self, chat_id: int, state: Dict[str, Any]):
@@ -44,12 +42,10 @@ class StateManager:
             await self._ensure_table()
             from core.database import db_manager
 
-            db = db_manager._db
-            await db.execute(
+            await db_manager.execute_write(
                 "INSERT OR REPLACE INTO user_states (chat_id, state_json, updated_at) VALUES (?, ?, ?)",
                 (chat_id, json.dumps(state, ensure_ascii=False), time.time()),
             )
-            await db.commit()
         except Exception as e:
             logger.debug(f"State persist failed for {chat_id}: {e}")
 
@@ -80,8 +76,9 @@ class StateManager:
             if row:
                 updated_at = row["updated_at"]
                 if time.time() - updated_at > self.ttl:
-                    await db.execute("DELETE FROM user_states WHERE chat_id = ?", (chat_id,))
-                    await db.commit()
+                    await db_manager.execute_write(
+                        "DELETE FROM user_states WHERE chat_id = ?", (chat_id,)
+                    )
                     return None
                 return json.loads(row["state_json"])
         except Exception as e:
@@ -104,9 +101,9 @@ class StateManager:
             await self._ensure_table()
             from core.database import db_manager
 
-            db = db_manager._db
-            await db.execute("DELETE FROM user_states WHERE chat_id = ?", (chat_id,))
-            await db.commit()
+            await db_manager.execute_write(
+                "DELETE FROM user_states WHERE chat_id = ?", (chat_id,)
+            )
         except Exception as e:
             logger.debug(f"State clear failed for {chat_id}: {e}")
 

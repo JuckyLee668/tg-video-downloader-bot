@@ -2,15 +2,16 @@ import asyncio
 import hashlib
 import hmac
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
 
-import aiosqlite
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from loguru import logger
 from pydantic import BaseModel
+from telethon.errors import SessionPasswordNeededError
 
 from core.config import ProxyConfig, config
 from core.database import db_manager
@@ -40,8 +41,10 @@ from web.api_models import (
     TaskIdRequest,
 )
 
-WEB_API_FAIL_COUNT = 0
-WEB_API_LOCKED = False
+WEB_API_FAILS: dict[str, int] = {}
+WEB_API_LOCK_UNTIL: dict[str, float] = {}
+WEB_API_MAX_FAILS = 5
+WEB_API_LOCK_SECONDS = 300
 
 
 def _mask_secret(value: str, keep: int = 4) -> str:
@@ -93,6 +96,15 @@ def _validate_telegram_init_data(init_data: str) -> dict | None:
     if not hmac.compare_digest(computed_hash, received_hash):
         return None
 
+    # Reject stale initData (replay protection).  Telegram sends auth_date in
+    # Unix seconds; allow a 24h window.
+    try:
+        auth_date = int(params.get("auth_date", "0"))
+    except (TypeError, ValueError):
+        return None
+    if auth_date <= 0 or time.time() - auth_date > 86400:
+        return None
+
     # Parse user info from the init data (JSON-encoded in the "user" param)
     import json
     try:
@@ -102,22 +114,46 @@ def _validate_telegram_init_data(init_data: str) -> dict | None:
         return {"id": params.get("user", "")}
 
 
+async def _is_allowed_tg_user(user: dict) -> bool:
+    """Apply the bot allowlist to a Mini App user."""
+    allowed = [str(item).strip().lower() for item in (config.allowed_user_ids or []) if str(item).strip()]
+    if not allowed:
+        return True
+
+    normalized = set(allowed)
+    uid = str(user.get("id", "") or "")
+    username = (user.get("username") or "").lower()
+
+    if uid and uid in normalized:
+        return True
+    if username and (username in normalized or f"@{username}" in normalized):
+        return True
+    if "me" in normalized and uid:
+        try:
+            if tg_clients.user_client and await tg_clients.user_client.is_user_authorized():
+                me = await tg_clients.user_client.get_me()
+                if me and str(me.id) == uid:
+                    return True
+        except Exception:
+            pass
+    return False
+
+
 async def require_api_key(
     request: Request,
     x_api_key: str | None = Header(default=None),
     x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
 ):
-    global WEB_API_FAIL_COUNT, WEB_API_LOCKED
+    client_key = request.client.host if request.client else "unknown"
 
     # ── Mini App auth: validate Telegram initData ──
     if x_telegram_init_data:
         user = _validate_telegram_init_data(x_telegram_init_data)
-        if user is not None:
+        if user is not None and await _is_allowed_tg_user(user):
             # Store user id in request state for downstream use
             request.state.tg_user = user
             return
-        else:
-            raise HTTPException(status_code=401, detail="Invalid Telegram initData signature")
+        raise HTTPException(status_code=401, detail="Invalid or unauthorized Telegram initData")
 
     # ── Legacy WEB_API_KEY auth ──
     expected = (os.getenv("WEB_API_KEY") or "").strip()
@@ -125,21 +161,36 @@ async def require_api_key(
         raise HTTPException(status_code=503, detail="WEB_API_KEY is required in production")
     if not expected:
         return
-    if WEB_API_LOCKED:
-        raise HTTPException(status_code=423, detail="WEB_API_KEY locked; restart the service to retry")
+
+    now = time.time()
+    locked_until = WEB_API_LOCK_UNTIL.get(client_key, 0)
+    if locked_until > now:
+        raise HTTPException(
+            status_code=423,
+            detail=f"Too many failed attempts; retry in {int(locked_until - now) + 1}s",
+        )
 
     provided = (x_api_key or "").strip()
     if not provided:
         raise HTTPException(status_code=401, detail="WEB_API_KEY missing")
 
     if not hmac.compare_digest(provided, expected):
-        WEB_API_FAIL_COUNT += 1
-        if WEB_API_FAIL_COUNT >= 3:
-            WEB_API_LOCKED = True
-            raise HTTPException(status_code=401, detail="WEB_API_KEY locked after 3 failed attempts")
-        raise HTTPException(status_code=401, detail=f"WEB_API_KEY invalid ({WEB_API_FAIL_COUNT}/3)")
+        fails = WEB_API_FAILS.get(client_key, 0) + 1
+        WEB_API_FAILS[client_key] = fails
+        if fails >= WEB_API_MAX_FAILS:
+            WEB_API_LOCK_UNTIL[client_key] = now + WEB_API_LOCK_SECONDS
+            WEB_API_FAILS.pop(client_key, None)
+            raise HTTPException(
+                status_code=401,
+                detail=f"Too many failed attempts; locked for {WEB_API_LOCK_SECONDS}s",
+            )
+        raise HTTPException(
+            status_code=401,
+            detail=f"WEB_API_KEY invalid ({fails}/{WEB_API_MAX_FAILS})",
+        )
 
-    WEB_API_FAIL_COUNT = 0
+    WEB_API_FAILS.pop(client_key, None)
+    WEB_API_LOCK_UNTIL.pop(client_key, None)
 
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
@@ -290,9 +341,7 @@ async def clear_history():
 
 @router.post("/queue/retry-failed")
 async def retry_failed():
-    async with aiosqlite.connect(db_manager.db_path) as db:
-        await db.execute("UPDATE download_queue SET status = 'pending', retry_count = 0 WHERE status = 'failed'")
-        await db.commit()
+    await db_manager.retry_failed_tasks()
     await download_manager.wake_workers()
     return {"status": "success"}
 
@@ -353,7 +402,12 @@ async def _ensure_user_client():
 
 
 async def get_searcher():
-    if not search.searcher:
+    # A searcher bound to a previous (logged-out) client must be rebuilt,
+    # otherwise every search hits a dead connection.
+    if (
+        not search.searcher
+        or search.searcher.client is not tg_clients.user_client
+    ):
         if tg_clients.user_client and await tg_clients.user_client.is_user_authorized():
             from telegram.search import init_searcher
 
@@ -446,9 +500,12 @@ async def start_thumbnail_gen(req: ThumbnailRequest):
 
             thumbs = []
             # results[i] corresponds to msgs_only[i] corresponds to msg_items[i]
-            for i, (path, name) in enumerate(results):
+            for i, item in enumerate(results):
                 if i >= len(msg_items):
                     break
+                if item is None:
+                    continue
+                path, name = item
                 _, req_item = msg_items[i]
                 thumbs.append({
                     "url": f"/thumbs/{path.name}",
@@ -505,11 +562,43 @@ async def download_batch(req: DownloadBatchRequest):
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+@router.post("/login/qr/start")
+async def login_qr_start(request: Request):
+    """Start a QR login and return the page URL to display the code."""
+    from web.qr_login import issue_token
+
+    try:
+        await tg_clients.start_qr_login()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    token = issue_token()
+    host = request.headers.get("host") or f"{config.web_host}:{config.web_port}"
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme or "http")
+    return {
+        "status": "success",
+        "page": f"{scheme}://{host}/api/login/qr/page?token={token}",
+    }
+
+
+@router.get("/login/qr/state")
+async def login_qr_state():
+    """Current QR login state (dashboard polling)."""
+    from web.qr_login import _login_state
+
+    return await _login_state()
+
+
 @router.post("/login/send-code")
 async def login_send_code(req: LoginSendCodeRequest):
     try:
-        await tg_clients.send_code(req.phone)
-        return {"status": "success"}
+        res = await tg_clients.send_code(req.phone, force_sms=req.force_sms)
+        return {
+            "status": "success",
+            "delivery": type(getattr(res, "type", None)).__name__,
+            "next_type": type(getattr(res, "next_type", None)).__name__,
+            "timeout": getattr(res, "timeout", None),
+        }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -517,10 +606,24 @@ async def login_send_code(req: LoginSendCodeRequest):
 @router.post("/login/sign-in")
 async def login_sign_in(req: LoginSignInRequest):
     try:
-        await tg_clients.sign_in(req.code)
+        await tg_clients.sign_in(req.code, password=req.password)
         return {"status": "success"}
+    except SessionPasswordNeededError as e:
+        raise HTTPException(
+            status_code=400, detail="该账号开启了两步验证，请输入两步验证密码"
+        ) from e
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/logout")
+async def logout():
+    """Terminate the user session so another account can be linked."""
+    try:
+        was_logged_in = await tg_clients.logout()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"status": "success", "was_logged_in": was_logged_in}
 
 
 @router.get("/me")
@@ -714,7 +817,7 @@ async def delete_local_files(req: FileDeleteRequest):
         fpath = downloads_dir / name
         try:
             safe = fpath.resolve()
-            if not str(safe).startswith(str(downloads_dir.resolve())):
+            if not safe.is_relative_to(downloads_dir.resolve()):
                 errors.append(f"{name}: path escape")
                 continue
             if safe.exists() and safe.is_file():

@@ -1,11 +1,17 @@
+import datetime
 import re
 
 from loguru import logger
 from telethon import events
+from telethon.errors.rpcerrorlist import (
+    PhoneCodeExpiredError,
+    PhoneCodeInvalidError,
+    SessionPasswordNeededError,
+)
 
 from core.config import config
 from downloader.manager import download_manager
-from telegram.client import tg_clients
+from telegram.client import CodeExpiredError, decode_shifted_code, tg_clients
 
 # 导入所有模块化的 handler
 from telegram.handlers import (
@@ -29,6 +35,129 @@ from telegram.handlers import (
 )
 from telegram.state_manager import state_manager
 
+
+def _bj_stamp(ts: float) -> str:
+    """Wall clock (Asia/Shanghai) of a unix timestamp — the server runs in UTC."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        dt = datetime.datetime.fromtimestamp(ts, ZoneInfo("Asia/Shanghai"))
+    except Exception:
+        dt = datetime.datetime.fromtimestamp(ts)
+    return dt.strftime("%H:%M:%S")
+
+
+def _sent_at_hint() -> str:
+    """Send time of the last code request, so the user picks the right message."""
+    ts = getattr(tg_clients, "code_sent_at", None)
+    if not ts:
+        return ""
+    return f"（发送时间 {_bj_stamp(ts)} 北京时间，请用聊天里**最新**那条）"
+
+
+def _delivery_where(res) -> str:
+    """Human readable description of where the login code went."""
+    delivery = type(getattr(res, "type", None)).__name__
+    return {
+        "SentCodeTypeApp": "Telegram 官方「Telegram」服务对话（站内消息，不是短信）",
+        "SentCodeTypeSms": "短信",
+        "SentCodeTypeCall": "语音电话",
+    }.get(delivery, "你的 Telegram 设备")
+
+
+async def _login_code_step(event, raw_code: str, phone: str | None = None):
+    """Submit a login code, keeping the login FSM usable whatever happens.
+
+    The code is expected to arrive with every digit bumped by one (12345 ->
+    23456): Telethon documents that a code sent through the app itself expires
+    immediately, so the real code must never appear verbatim in the chat.  The
+    verbatim form is tried as a fallback in case the user forgets.
+    """
+    phone = phone or getattr(tg_clients, "phone", None)
+
+    decoded = decode_shifted_code(raw_code)
+    if decoded and decoded != raw_code:
+        candidates = [decoded, raw_code]
+    else:
+        candidates = [raw_code]
+
+    for code in candidates:
+        try:
+            await tg_clients.sign_in(code)
+        except SessionPasswordNeededError:
+            await event.respond("🔐 你的账号启用了两步验证，请输入密码：")
+            await state_manager.set(
+                event.chat_id, {"command": "login", "step": "password", "phone": phone}
+            )
+            return
+        except PhoneCodeInvalidError:
+            # Try the next interpretation (verbatim vs. de-shifted) before
+            # bothering the user again.
+            continue
+        except (PhoneCodeExpiredError, CodeExpiredError):
+            # Telegram kills the previous code the moment a newer one is issued,
+            # so a code copied from an older message reads as "expired" even
+            # seconds after a fresh request. Re-issue one and keep the step
+            # alive: clearing it made the user's corrected retry land on
+            # "No state" and get dropped.
+            age = tg_clients.code_age()
+            age_txt = f"{age:.0f}s" if age is not None else "unknown"
+            logger.warning(
+                f"验证码已失效: user={event.chat_id}, phone={phone}, code_age={age_txt}"
+            )
+            if not phone:
+                await event.respond(
+                    "⚠️ 验证码已失效，且本次登录上下文已丢失（服务可能重启过）。\n"
+                    "请发送 `/login 手机号` 重新开始。"
+                )
+                await state_manager.clear(event.chat_id)
+                return
+            try:
+                res = await tg_clients.send_code(phone, force=True)
+            except Exception as e:
+                await event.respond(
+                    "⚠️ 这条验证码已失效（Telegram 在新码发出后会立刻作废旧码，"
+                    "多半是拿成了上一条）。\n"
+                    f"❌ 自动重发也失败了：{e}\n"
+                    "稍等片刻后直接发送手机号即可重新获取。"
+                )
+                await state_manager.set(
+                    event.chat_id, {"command": "login", "step": "phone"}
+                )
+            else:
+                await event.respond(
+                    "⚠️ 这条验证码已失效（Telegram 在新码发出后会立刻作废旧码，"
+                    "多半是拿成了上一条）。\n\n"
+                    f"📩 已重新发送一条新的到：{_delivery_where(res)}{_sent_at_hint()}\n"
+                    "请把**最新**那条验证码每位 +1 后再发给我。"
+                )
+                await state_manager.set(
+                    event.chat_id, {"command": "login", "step": "code", "phone": phone}
+                )
+            return
+        except Exception as e:
+            await event.respond(f"❌ 登录失败：{e}")
+            await state_manager.set(
+                event.chat_id, {"command": "login", "step": "phone"}
+            )
+            return
+        else:
+            await event.respond("🎉 登录成功！现在可以使用频道搜索、下载和自动监控了。")
+            await state_manager.clear(event.chat_id)
+            return
+
+    # Every interpretation of the input was rejected: a typo, or +1 forgotten
+    # and the digits happened to be a different valid code.
+    await event.respond(
+        "❌ 验证码不正确。请把**最新**那条验证码的每一位都 +1 后发给我\n"
+        "（例：真实 12345 → 发送 23456；9 变成 0）。\n"
+        "（发送 /cancel 可取消登录）"
+    )
+    await state_manager.set(
+        event.chat_id, {"command": "login", "step": "code", "phone": phone}
+    )
+
+
 # 命令映射表
 COMMAND_MAP = {
     # 系统
@@ -38,6 +167,8 @@ COMMAND_MAP = {
     "status": system.status_handler,
     "s": system.status_handler,
     "login": auth.login_handler,
+    "qr": auth.qr_login_handler,
+    "logout": auth.logout_handler,
     # 频道
     "channel": cmd_channel.channel_handler,
     # 搜索
@@ -163,8 +294,8 @@ async def command_router(event):
     if not text.startswith('/'):
         return
 
-    # 解析命令和参数: /cmd arg1 arg2 -> cmd, "arg1 arg2"
-    match = re.match(r'^/(\w+)(?: +(.+))?$', text)
+    # 解析命令和参数: /cmd arg1 arg2 /cmd@botname arg
+    match = re.match(r'^/(\w+)(?:@\w+)?(?:\s+(.*))?$', text)
     if not match:
         return
 
@@ -232,19 +363,21 @@ async def _try_auth_token(event):
 
 async def _try_url_auto_detect(event):
     """检测消息是否为支持的视频链接，是则自动走交互流程。"""
-    text = event.text.strip()
+    text = (event.text or "").strip()
 
-    # 检查是否为 URL
+    # Extract the link instead of passing the whole message: yt-dlp rejects
+    # "看看这个 https://… 谢谢" with "[generic] ... is not a valid URL".
     from downloader.external import external_downloader
-    if not external_downloader.is_supported(text):
+    url = external_downloader.extract_supported_url(text)
+    if not url:
         return
 
     if not await _ensure_authorized_or_reply(event):
         raise events.StopPropagation
 
-    logger.info(f"Auto-detected external URL: {text[:80]}...")
+    logger.info(f"Auto-detected external URL: {url[:80]}")
     from telegram.handlers.cmd_x import handle_interactive
-    await handle_interactive(event, text)
+    await handle_interactive(event, url)
     raise events.StopPropagation
 
 
@@ -258,6 +391,16 @@ async def state_handler(event):
 
     state = await state_manager.get(event.chat_id)
     if not state:
+        # Recover a lost login step: a code typed right after a restart or after
+        # a failed attempt used to be dropped with "No state for ..., text=...".
+        pending = tg_clients.pending_login()
+        typed = (event.text or "").strip().replace(' ', '')
+        if pending and typed.isdigit() and 4 <= len(typed) <= 7:
+            await _login_code_step(event, typed, pending[0])
+            raise events.StopPropagation
+
+        if not await _ensure_authorized_or_reply(event):
+            raise events.StopPropagation
         # auth_token 保存
         if await _try_auth_token(event):
             raise events.StopPropagation
@@ -290,15 +433,61 @@ async def state_handler(event):
         elif cmd == 'login':
             if step == 'phone':
                 phone = event.text.strip().replace(' ', '')
-                await tg_clients.send_code(phone)
-                await event.respond("📩 验证码已发送！请输入收到的验证码（注意：每一位数字减一后输入）。")
-                await state_manager.update(event.chat_id, step='code')
+                try:
+                    res = await tg_clients.send_code(phone)
+                except Exception as e:
+                    await event.respond(f"❌ 验证码发送失败：{e}")
+                    # Stay on the phone step: once the cooldown / flood wait is
+                    # over the user can just send the number again.
+                    await state_manager.update(event.chat_id, step='phone')
+                    return
+                delivery = type(getattr(res, "type", None)).__name__
+                if delivery == "SentCodeTypeApp":
+                    where = "Telegram 官方「Telegram」服务对话（站内消息，不是短信）"
+                elif delivery == "SentCodeTypeSms":
+                    where = "短信"
+                elif delivery == "SentCodeTypeCall":
+                    where = "语音电话"
+                else:
+                    where = "你的 Telegram 设备"
+                await event.respond(
+                    f"📩 验证码已发送到：{where}{_sent_at_hint()}\n\n"
+                    "⚠️ 请把验证码的**每一位数字都 +1** 后发给我\n"
+                    "（例：真实 12345 → 发送 23456；9 变成 0）。\n"
+                    "这样验证码不会原样出现在聊天里，避免 Telegram 判定为"
+                    "「站内转发」而立刻作废。\n\n"
+                    "需要两步验证密码的话会再提示，发送 /cancel 可取消。"
+                )
+                await state_manager.update(event.chat_id, step='code', phone=phone)
             elif step == 'code':
-                raw_code = event.text.strip()
-                transformed_code = "".join(str((int(d) + 1) % 10) if d.isdigit() else d for d in raw_code)
-                await tg_clients.sign_in(transformed_code)
-                await event.respond("🎉 登录成功！")
-                await state_manager.clear(event.chat_id)
+                raw_code = event.text.strip().replace(' ', '')
+                digits = raw_code.lstrip('+')
+                # A phone number typed while waiting for the code means "send a
+                # new code to this number" — restart instead of burning a
+                # guaranteed-to-fail sign-in attempt.
+                if raw_code.startswith('+') and digits.isdigit() and len(digits) > 8:
+                    try:
+                        res = await tg_clients.send_code(raw_code)
+                    except Exception as e:
+                        await event.respond(f"❌ 验证码发送失败：{e}")
+                    else:
+                        await event.respond(
+                            f"📩 验证码已重新发送到：{_delivery_where(res)}\n\n"
+                            "请使用**最新**一条验证码。"
+                        )
+                        await state_manager.update(
+                            event.chat_id, step='code', phone=raw_code
+                        )
+                    raise events.StopPropagation
+
+                await _login_code_step(event, raw_code, state.get('phone'))
+            elif step == 'password':
+                try:
+                    await tg_clients.sign_in(password=event.text.strip())
+                    await event.respond("🎉 两步验证通过，登录成功！")
+                    await state_manager.clear(event.chat_id)
+                except Exception as e:
+                    await event.respond(f"❌ 密码错误或登录失败：{e}")
 
         # --- CHANNEL CONNECT ---
         elif cmd == 'cc':
@@ -448,14 +637,14 @@ async def media_auto_handler(event):
     # 群组媒体（相册）→ 批量静默入库
     if event.message.grouped_id:
         import os
-        raw_name = event.message.file.name
+        raw_name = event.message.file.name if event.message.file else ""
         file_name = raw_name if (raw_name and os.path.splitext(raw_name)[0]) else f"media_{event.message.id}"
         task = {
             'chat_id': chat_id,
             'message_id': event.message.id,
             'file_name': file_name,
             'media_type': media_type,
-            'file_size': event.message.file.size or 0,
+            'file_size': (event.message.file.size if event.message.file else 0) or 0,
             'task_data': {'requester_chat_id': chat_id}
         }
         await download_manager.add_task(task)
@@ -464,14 +653,14 @@ async def media_auto_handler(event):
     # 频道/群组里静默入库
     if download_manager._is_channel_or_group(chat_id):
         import os
-        raw_name = event.message.file.name
+        raw_name = event.message.file.name if event.message.file else ""
         file_name = raw_name if (raw_name and os.path.splitext(raw_name)[0]) else f"media_{event.message.id}"
         task = {
             'chat_id': chat_id,
             'message_id': event.message.id,
             'file_name': file_name,
             'media_type': media_type,
-            'file_size': event.message.file.size or 0,
+            'file_size': (event.message.file.size if event.message.file else 0) or 0,
             'task_data': {'requester_chat_id': chat_id}
         }
         await download_manager.add_task(task)

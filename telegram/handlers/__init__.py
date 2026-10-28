@@ -31,6 +31,8 @@ def setup_handlers():
                 commands=[
                     types.BotCommand(command='start', description='开始使用'),
                     types.BotCommand(command='login', description='登录状态/登录账号'),
+                    types.BotCommand(command='qr', description='扫码登录'),
+                    types.BotCommand(command='logout', description='退出登录'),
                     types.BotCommand(command='status', description='任务状态'),
                     types.BotCommand(command='channel', description='频道连接/列表'),
                     types.BotCommand(command='search', description='搜索频道媒体'),
@@ -52,17 +54,24 @@ def setup_handlers():
             ))
 
             # 输入框右侧 MenuButton → 直接打开 Mini App
+            # Telegram only accepts HTTPS URLs here; plain HTTP raises
+            # "Button URL invalid" and would abort the command-menu update.
             from telegram.handlers.system import _get_mini_app_url
             mini_app_url = _get_mini_app_url()
-            await bot(functions.bots.SetBotMenuButtonRequest(
-                user_id=types.InputUserSelf(),
-                button=types.BotMenuButton(
-                    text='📊 管理面板',
-                    url=mini_app_url,
-                ),
-            ))
-
-            logger.info("Bot 命令菜单 + MenuButton 已更新")
+            if mini_app_url.lower().startswith("https://"):
+                await bot(functions.bots.SetBotMenuButtonRequest(
+                    user_id=types.InputUserSelf(),
+                    button=types.BotMenuButton(
+                        text='📊 管理面板',
+                        url=mini_app_url,
+                    ),
+                ))
+                logger.info("Bot 命令菜单 + MenuButton 已更新")
+            else:
+                logger.info(
+                    f"跳过 MenuButton 设置（需要 HTTPS 地址，当前为 {mini_app_url}）"
+                )
+                logger.info("Bot 命令菜单已更新")
         except Exception as e:
             logger.error(f"设置菜单失败: {e}")
 
@@ -79,6 +88,25 @@ def setup_handlers():
     bot.add_event_handler(media_auto_handler, events.NewMessage(incoming=True))
 
     # 3. 注册内联按钮回调处理器
+    # 所有回调先经过统一的权限校验；未授权用户会被 StopPropagation 截断。
+    async def _callback_auth_guard(event):
+        from telegram.router import _is_authorized_event
+
+        if await _is_authorized_event(event):
+            return
+        logger.warning(
+            "Blocked unauthorized callback: sender_id={} data={}",
+            getattr(event, "sender_id", None),
+            getattr(event, "data", b"")[:80],
+        )
+        try:
+            await event.answer("❌ 你没有权限使用这个机器人。", alert=True)
+        except Exception:
+            pass
+        raise events.StopPropagation
+
+    bot.add_event_handler(_callback_auth_guard, events.CallbackQuery())
+
     bot.add_event_handler(
         autofwd_callback_handler,
         events.CallbackQuery(data=re.compile(rb'^autofwd:'))

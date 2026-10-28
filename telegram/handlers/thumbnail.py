@@ -8,7 +8,14 @@ from loguru import logger
 from telethon import TelegramClient
 from telethon.tl.types import Message
 
-THUMB_DIR = Path("/root/.tg_downloader_thumbs")
+from core.config import config
+
+# Keep thumbnails next to the download directory (portable across OSes); allow
+# an explicit override for existing deployments.
+THUMB_DIR = Path(
+    os.getenv("THUMB_DIR")
+    or (Path(config.save_path).expanduser().parent / ".tg_downloader_thumbs")
+).resolve()
 MAX_THUMBS = 15
 
 
@@ -97,13 +104,18 @@ async def generate_thumbnails(
     tasks = [_download_one(msg, fname) for msg, fname in targets]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    valid = []
+    valid: List[Optional[Tuple[Path, str]]] = []
     for r in results:
         if isinstance(r, Exception):
+            valid.append(None)
             continue
         if r and Path(r[0]).exists() and Path(r[0]).stat().st_size > 0:
             valid.append(r)
+        else:
+            valid.append(None)
 
+    # Keep the list aligned with the input so callers can map result[i] to
+    # messages[i]; entries without a thumbnail are None.
     return valid
 
 
@@ -114,7 +126,10 @@ async def send_thumbnails(event, thumb_items: List[Tuple[Path, str]]):
     """
     if not thumb_items:
         return
-    for idx, (path, fname) in enumerate(thumb_items, start=1):
+    for idx, item in enumerate(thumb_items, start=1):
+        if item is None:
+            continue
+        path, fname = item
         try:
             await event.client.send_file(
                 event.chat_id,

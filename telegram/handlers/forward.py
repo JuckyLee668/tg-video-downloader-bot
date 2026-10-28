@@ -125,7 +125,8 @@ async def do_bf(event, target, indices_str=None, delete_after=False, exclude_lar
     added = 0
     for msg in messages_to_forward:
         file_name = message_file_name(msg)
-        display_name = f"[DEL]{file_name}" if delete_after else file_name
+        # `delete_after_forward` already travels in task_data; do not encode it
+        # into the filename (that would create real files named "[DEL]...").
 
         task_data = {
             'original_file_name': file_name,
@@ -142,7 +143,7 @@ async def do_bf(event, target, indices_str=None, delete_after=False, exclude_lar
         task = {
             'chat_id': str(event.chat_id),
             'message_id': msg.id,
-            'file_name': display_name,
+            'file_name': file_name,
             'media_type': msg.media.__class__.__name__ if msg.media else 'unknown',
             'file_size': msg.file.size if msg.file else 0,
             'channel_id': msg.chat_id,

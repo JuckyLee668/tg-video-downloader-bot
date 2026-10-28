@@ -6,9 +6,9 @@ from telethon.tl.types import Message
 
 from core.database import db_manager
 from downloader.manager import download_manager
+from telegram import search as search_module
 from telegram.client import tg_clients
 from telegram.handlers.utils import message_file_info
-from telegram.search import searcher
 
 
 class WatchManager:
@@ -96,20 +96,31 @@ class WatchManager:
             logger.warning(f"Could not resolve peer for channel {channel_id}")
             return
 
-        # On first run (last_read_id == 0), only get the last 10 messages
-        # to avoid flooding the download queue with historical data.
+        # The very first run only initializes the cursor to the newest message.
+        # Processing history here would flood the queue with old media.
         if last_read_id == 0:
-            limit = 10
-            min_id = None
-        else:
-            limit = 50
-            min_id = last_read_id
+            latest = await tg_clients.user_client.get_messages(peer, limit=1)
+            if latest:
+                await db_manager.update_watch_state(
+                    owner_chat_id=owner_chat_id,
+                    channel_id=channel_id,
+                    last_read_id=latest[0].id,
+                )
+                logger.info(
+                    f"Watch cursor initialised for {channel_id} at message {latest[0].id}"
+                )
+            return
 
+        # Read oldest-first and stop after a batch.  If more than one batch is
+        # pending, the cursor advances to the last processed message and the
+        # next run continues from there (no gaps).
+        batch_size = 200
         new_messages: List[Message] = []
         async for message in tg_clients.user_client.iter_messages(
             peer,
-            min_id=min_id,
-            limit=limit,
+            min_id=last_read_id,
+            reverse=True,
+            limit=batch_size,
         ):
             new_messages.append(message)
 
@@ -138,9 +149,9 @@ class WatchManager:
         then falls back to direct entity lookup.
         """
         # Try using the searcher's cached resolution
-        if searcher:
+        if search_module.searcher:
             try:
-                peer = await searcher._get_peer(channel_id)
+                peer = await search_module.searcher._get_peer(channel_id)
                 if peer:
                     return peer
             except Exception:

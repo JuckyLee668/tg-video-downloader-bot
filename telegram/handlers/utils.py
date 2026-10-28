@@ -86,12 +86,15 @@ async def ensure_searcher(event=None):
             await event.respond("❌ 请先使用 /login 登录用户账号。")
         return False
 
-    from telegram.search import init_searcher, searcher
+    from telegram import search as search_module
+    from telegram.search import init_searcher
 
-    if not searcher:
+    # Re-init when the cached searcher is missing *or* still bound to a
+    # previous TelegramClient (logout / account switch creates a new one).
+    if not search_module.searcher or search_module.searcher.client is not tg_clients.user_client:
         init_searcher(tg_clients.user_client)
 
-    if not await searcher.ensure_connected():
+    if not await search_module.searcher.ensure_connected():
         if event:
             await event.respond("❌ 请先使用 /cc 连接要搜索的频道。")
         return False

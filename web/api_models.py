@@ -34,9 +34,12 @@ class DownloadBatchRequest(BaseModel):
 
 class LoginSendCodeRequest(BaseModel):
     phone: str = Field(min_length=6, max_length=32, pattern=r"^\+?[0-9][0-9 ()-]*$")
+    force_sms: bool = False
 
 class LoginSignInRequest(BaseModel):
-    code: str = Field(min_length=2, max_length=32)
+    # `code` doubles as the 2FA password when Telegram asks for it.
+    code: str = Field(min_length=1, max_length=128)
+    password: str | None = Field(default=None, max_length=256)
 
 class ProxyConfigRequest(BaseModel):
     scheme: str = Field(default="http", pattern=r"^(http|socks5)$")

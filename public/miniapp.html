@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>TG Media Downloader</title>
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/vendor/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="/vendor/tailwind.css">
     <style>
         :root {
             --tg-bg: #ffffff;
@@ -514,9 +514,14 @@
                     </div>
                 </div>
                 <div id="dash-no-login" class="hidden">
-                    <div class="flex items-center gap-3 p-3 rounded-xl" style="background: #fef3c7;">
-                        <span class="text-xl">⚠️</span>
-                        <p class="text-sm" style="color: #92400e;">未登录，请在 Bot 中发送 /login</p>
+                    <div class="p-3 rounded-xl" style="background: #fef3c7;">
+                        <div class="flex items-center gap-3 mb-2">
+                            <span class="text-xl">⚠️</span>
+                            <p class="text-sm" style="color: #92400e;">未登录，尚未绑定 Telegram 账号</p>
+                        </div>
+                        <button onclick="startQrLogin()" class="btn btn-sm w-full" style="background: var(--tg-button); color: var(--tg-button-text)">
+                            📱 扫码登录
+                        </button>
                     </div>
                 </div>
             </div>
@@ -818,6 +823,22 @@
                 </div>
             </div>
 
+            <!-- Account -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">🔐 账号操作</span>
+                </div>
+                <div class="space-y-2">
+                    <button id="settings-logout-btn" onclick="logoutUser()" class="btn btn-sm w-full"
+                            style="background: #fee2e2; color: #b91c1c;">
+                        🚪 退出登录
+                    </button>
+                    <p class="text-xs" style="color:var(--tg-hint)">
+                        退出会同时终止 Telegram 服务器上的该会话，之后需要用手机重新扫码。
+                    </p>
+                </div>
+            </div>
+
             <div style="height:16px"></div>
         </div>
     </div>
@@ -844,7 +865,13 @@
 
     <script>
         // ── Telegram WebApp Init ──────────────────────────────
-        const tg = window.Telegram ? window.Telegram.WebApp : null;
+        // The SDK is bundled locally, so it is always defined.  Only treat the
+        // page as a Mini App when Telegram actually launched it: otherwise
+        // tg.showPopup/tg.openLink would post messages nobody answers and the
+        // confirm dialogs would hang forever.
+        const tgSdk = window.Telegram ? window.Telegram.WebApp : null;
+        const inTelegram = !!(tgSdk && (tgSdk.initData || (tgSdk.platform && tgSdk.platform !== 'unknown')));
+        const tg = inTelegram ? tgSdk : null;
         if (tg) {
             tg.ready();
             tg.expand();
@@ -897,6 +924,27 @@
                 });
             }
             return confirm(msg);
+        }
+
+        // ── Account actions ──
+        async function startQrLogin() {
+            try {
+                const res = await fetchApi('/login/qr/start', { method: 'POST' });
+                if (tg && tg.openLink) tg.openLink(res.page);
+                else window.open(res.page, '_blank', 'noopener');
+                showToast('请用手机 Telegram 扫码');
+            } catch (e) {}
+        }
+
+        async function logoutUser() {
+            const ok = await showConfirm('确定退出登录？该会话会在 Telegram 服务器上终止，之后需要重新扫码。');
+            if (!ok) return;
+            try {
+                await fetchApi('/logout', { method: 'POST' });
+                showToast('已退出登录');
+                await checkLogin();
+                await updateStats();
+            } catch (e) {}
         }
 
         // ── API Key fallback (desktop 浏览器没有 Telegram initData) ──
@@ -1000,6 +1048,8 @@
                     userEl.classList.add('hidden');
                     noLoginEl.classList.remove('hidden');
                 }
+                const logoutBtn = document.getElementById('settings-logout-btn');
+                if (logoutBtn) logoutBtn.classList.toggle('hidden', !me.logged_in);
             } catch(e) { console.error('Login check error:', e); }
         }
 
@@ -1166,13 +1216,15 @@
                 }
                 list.innerHTML = queue.map(t => {
                     const statusBadge = t.status === 'downloading' ? 'badge-blue' :
+                                        t.status === 'forwarding' ? 'badge-purple' :
                                         t.status === 'failed' ? 'badge-red' :
                                         t.status === 'completed' ? 'badge-green' : 'badge-gray';
                     const statusLabel = t.status === 'downloading' ? '下载中' :
+                                        t.status === 'forwarding' ? '转发中' :
                                         t.status === 'failed' ? '失败' :
                                         t.status === 'completed' ? '完成' : '排队';
-                    const pgColor = t.status === 'failed' ? '#ef4444' : t.status === 'downloading' ? '#3b82f6' : '#22c55e';
-                    const progressHtml = (t.status === 'downloading' || t.status === 'failed') ? `
+                    const pgColor = t.status === 'failed' ? '#ef4444' : t.status === 'downloading' ? '#3b82f6' : t.status === 'forwarding' ? '#8b5cf6' : '#22c55e';
+                    const progressHtml = (t.status === 'downloading' || t.status === 'forwarding' || t.status === 'failed') ? `
                         <div class="progress-bar mt-1.5">
                             <div class="progress-bar-fill" style="width:${t.progress||0}%; background:${pgColor}"></div>
                         </div>

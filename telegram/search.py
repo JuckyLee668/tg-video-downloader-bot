@@ -11,6 +11,47 @@ from core.config import config
 from core.database import db_manager
 
 
+async def resolve_input_entity(client: TelegramClient, identifier: str):
+    """Resolve a username, t.me link or numeric id to an InputPeer.
+
+    Telethon sends *every* string through ``_get_entity_from_string``, which
+    treats it as a username — so a plain id like ``-1002175222990`` fails with
+    "Cannot find any entity corresponding to ...".  Numeric ids are therefore
+    coerced to ``int`` (cache lookup) and, when the cache is still cold, looked
+    up with a single dialog scan.
+    """
+    ident = str(identifier).strip()
+    for prefix in ("https://t.me/", "http://t.me/", "t.me/"):
+        if ident.startswith(prefix):
+            ident = ident[len(prefix):]
+            break
+    ident = ident.lstrip("@").rstrip("/")
+
+    if not ident.lstrip("-").isdigit():
+        return await client.get_input_entity(ident)
+
+    value = int(ident)
+    candidates = [value]
+    if value > 0:
+        # Channel ids are usually pasted without the -100 marker.
+        candidates += [int(f"-100{value}"), -value]
+
+    for candidate in candidates:
+        try:
+            return await client.get_input_entity(candidate)
+        except Exception:
+            continue
+
+    # Entity cache is empty right after a restart; one dialog scan fills it.
+    wanted = {value, *candidates}
+    async for dialog in client.iter_dialogs():
+        if dialog.id in wanted:
+            return await client.get_input_entity(dialog.entity)
+
+    raise ValueError(f"未找到 ID 为 {ident} 的会话，请在 Telegram 里打开过该频道后再试")
+
+
+
 class ChannelSearcher:
     def __init__(self, client: TelegramClient):
         self.client = client
@@ -68,7 +109,7 @@ class ChannelSearcher:
 
     async def connect_channel(self, identifier: str) -> Dict[str, Any]:
         try:
-            entity = await self.client.get_input_entity(identifier)
+            entity = await resolve_input_entity(self.client, identifier)
             full_entity = await self.client.get_entity(entity)
 
             channels = await db_manager.get_connected_channels()

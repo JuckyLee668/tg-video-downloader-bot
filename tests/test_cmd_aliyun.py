@@ -1,5 +1,6 @@
 """Tests for telegram/handlers/cmd_aliyun.py — /aliyun command."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -527,7 +528,9 @@ class TestLoginEdgeCases:
         )
 
         fake_proc = AsyncMock()
-        fake_proc.communicate = AsyncMock(side_effect=TimeoutError)
+        fake_proc.returncode = None
+        fake_proc.stdout.readline = AsyncMock(side_effect=asyncio.TimeoutError)
+        fake_proc.terminate = lambda: None
 
         monkeypatch.setattr(
             "asyncio.create_subprocess_exec",

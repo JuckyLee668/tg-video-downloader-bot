@@ -164,7 +164,10 @@ async def search_keyword_handler(event, arg=None):
         if tg_clients.user_client and await tg_clients.user_client.is_user_authorized():
             await cleanup_old_thumbs()
             thumb_items = await generate_thumbnails(tg_clients.user_client, messages[:20])
-            if thumb_items:
+            # generate_thumbnails returns a list aligned with the input where
+            # misses are None — a non-empty list of all-None still means "no
+            # thumbnail at all", which used to swallow the text fallback.
+            if any(item is not None for item in thumb_items):
                 await send_thumbnails(event, thumb_items)
             else:
                 # 无缩略图时回退到纯文本列表
@@ -206,7 +209,7 @@ async def search_recent_handler(event, arg=None):
         if tg_clients.user_client and await tg_clients.user_client.is_user_authorized():
             await cleanup_old_thumbs()
             thumb_items = await generate_thumbnails(tg_clients.user_client, messages[:20])
-            if thumb_items:
+            if any(item is not None for item in thumb_items):
                 await send_thumbnails(event, thumb_items)
             else:
                 text_list = ""

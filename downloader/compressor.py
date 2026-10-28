@@ -1,11 +1,14 @@
 """FFmpeg-based video compression for files exceeding Telegram's 2GB limit."""
 
 import asyncio
+import os
 import shutil
 from pathlib import Path
 from typing import Callable, Optional
 
 from loguru import logger
+
+from core.paths import part_path_for
 
 
 class VideoCompressor:
@@ -123,21 +126,29 @@ class VideoCompressor:
         # Use .mp4 container for output compatibility
         if not temp_output.suffix or temp_output.suffix.lower() not in (".mp4", ".mkv", ".mov", ".avi", ".webm"):
             temp_output = temp_output.with_suffix(".mp4")
+        # Unique per call: two workers compressing identically named videos
+        # would otherwise run ffmpeg into the same output file.
+        temp_output = part_path_for(temp_output)
 
         loop = asyncio.get_event_loop()
 
-        if max_bitrate:
-            await self._compress_with_bitrate(
-                str(original), str(temp_output), max_bitrate, preset, progress_callback, loop
-            )
-        else:
-            await self._compress_with_crf(
-                str(original), str(temp_output), crf, target_size_bytes, preset, progress_callback, loop
-            )
+        try:
+            if max_bitrate:
+                await self._compress_with_bitrate(
+                    str(original), str(temp_output), max_bitrate, preset, progress_callback, loop
+                )
+            else:
+                await self._compress_with_crf(
+                    str(original), str(temp_output), crf, target_size_bytes, preset, progress_callback, loop
+                )
 
-        # Verify output
-        if not temp_output.exists() or temp_output.stat().st_size == 0:
-            raise RuntimeError(f"Compression produced empty or missing file: {temp_output}")
+            # Verify output
+            if not temp_output.exists() or temp_output.stat().st_size == 0:
+                raise RuntimeError(f"Compression produced empty or missing file: {temp_output}")
+        except BaseException:
+            # Never leave a half-written temp encode behind.
+            Path(temp_output).unlink(missing_ok=True)
+            raise
 
         compressed_size = temp_output.stat().st_size
         reduction = (1 - compressed_size / original_size) * 100
@@ -146,12 +157,10 @@ class VideoCompressor:
             f"{compressed_size / 1024 / 1024:.0f}MB ({reduction:.1f}% reduction)"
         )
 
-        # Replace original with compressed
-        original.unlink()
-        # Use os.rename for atomic cross-filesystem moves
-        import os
+        # Replace the original in a single atomic step. Unlinking it first would
+        # leave a window where the file is missing for readers/forwarders.
         final_path = original.parent / original.name
-        os.rename(str(temp_output), str(final_path))
+        os.replace(str(temp_output), str(final_path))
 
         # Fire final progress
         if progress_callback:
@@ -183,6 +192,14 @@ class VideoCompressor:
                 return  # Success
 
             # Still too large; try higher CRF
+            if attempt == 2:
+                # Keep the best-effort output instead of deleting it and
+                # failing later with a confusing "missing file" error.
+                logger.warning(
+                    f"Compressed file still over target after 3 attempts; keeping "
+                    f"best-effort output ({out_path.stat().st_size / 1024 / 1024:.0f}MB)"
+                )
+                return
             current_crf = min(51, current_crf + 5)
             logger.warning(
                 f"Compressed size ({out_path.stat().st_size / 1024 / 1024:.0f}MB) "
@@ -192,7 +209,6 @@ class VideoCompressor:
             # Remove the too-large output before retry
             out_path.unlink(missing_ok=True)
 
-        # Last attempt already tried; if we get here the last attempt was still too large
         logger.warning("Compressed file still exceeds target after all CRF attempts")
 
     async def _compress_with_bitrate(
@@ -270,11 +286,18 @@ class VideoCompressor:
             info = self.get_video_info(input_path)
             total_duration_us = int(info.get("duration_sec", 0) * 1_000_000)
 
+        process_kwargs = {}
+        if os.name == "nt":
+            # CREATE_NEW_PROCESS_GROUP; preexec_fn/start_new_session are POSIX-only.
+            process_kwargs["creationflags"] = 0x00000200
+        else:
+            process_kwargs["start_new_session"] = True
+
         process = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            preexec_fn=os.setsid,
+            **process_kwargs,
         )
 
         # Read progress from stdout, errors from stderr

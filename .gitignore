@@ -36,3 +36,8 @@ logs/
 # IDEs
 .vscode/
 .idea/
+
+# Deployment / patch backups (never commit, may hold secrets)
+*.bak_*
+*.bak
+.env.bak.*

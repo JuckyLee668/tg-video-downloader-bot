@@ -8,6 +8,7 @@ from telethon import Button
 
 from core.database import db_manager
 from telegram.client import tg_clients
+from telegram.search import resolve_input_entity
 from telegram.state_manager import state_manager
 
 
@@ -161,7 +162,7 @@ async def handle_watch_add_channel(event, state):
         return
 
     try:
-        entity = await tg_clients.user_client.get_input_entity(text)
+        entity = await resolve_input_entity(tg_clients.user_client, text)
         full_entity = await tg_clients.user_client.get_entity(entity)
     except Exception as e:
         logger.warning(f"Failed to resolve '{text}': {e}")
@@ -237,7 +238,7 @@ async def _add_rule(event, chat_id: str, args: str):
         return
 
     try:
-        entity = await tg_clients.user_client.get_input_entity(identifier)
+        entity = await resolve_input_entity(tg_clients.user_client, identifier)
         full_entity = await tg_clients.user_client.get_entity(entity)
     except Exception:
         await event.respond(f"❌ 无法解析频道 `{identifier}`。")

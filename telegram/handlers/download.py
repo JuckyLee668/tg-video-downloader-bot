@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from core.database import db_manager
 from downloader.manager import download_manager
 from telegram import search as search_module
@@ -44,10 +46,64 @@ async def batch_download_handler(event, arg=None):
     await event.respond(f"✅ 成功添加 {count} 个下载任务。")
 
 
+def _default_ext(msg) -> str:
+    """Best-effort extension for messages that have no filename."""
+    if getattr(msg, "photo", None):
+        return "jpg"
+    if getattr(msg, "video", None):
+        return "mp4"
+    if getattr(msg, "voice", None):
+        return "ogg"
+    if getattr(msg, "audio", None):
+        return "mp3"
+    if getattr(msg, "gif", None):
+        return "mp4"
+    if getattr(msg, "sticker", None):
+        return "webp"
+    mime = getattr(getattr(msg, "file", None), "mime_type", "") or ""
+    if "video" in mime:
+        return "mp4"
+    if "audio" in mime:
+        return "mp3"
+    if "image" in mime:
+        return "jpg"
+    return "bin"
+
+
+def _media_type(msg) -> str:
+    if getattr(msg, "video", None):
+        return "video"
+    if getattr(msg, "photo", None):
+        return "photo"
+    if getattr(msg, "voice", None):
+        return "voice"
+    if getattr(msg, "audio", None):
+        return "audio"
+    if getattr(msg, "gif", None):
+        return "animation"
+    if getattr(msg, "sticker", None):
+        return "sticker"
+    mime = getattr(getattr(msg, "file", None), "mime_type", "") or ""
+    if mime.startswith("video/"):
+        return "video"
+    if mime.startswith("audio/"):
+        return "audio"
+    if mime.startswith("image/"):
+        return "photo"
+    return "document"
+
+
 def _msg_to_info(msg) -> dict:
     """从 Telegram Message 提取统一 info 格式。"""
     name = getattr(msg.file, "name", "") if msg.file else ""
-    ext = name.rsplit(".", 1)[-1] if "." in (name or "") else "mp4"
+    if name:
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else _default_ext(msg)
+        # `title` must be the stem, otherwise callers that append ".<ext>"
+        # produce names like "clip.mp4.mp4".
+        title = Path(name).stem
+    else:
+        ext = _default_ext(msg)
+        title = f"media_{msg.id}"
 
     duration = 0
     width = height = 0
@@ -63,12 +119,13 @@ def _msg_to_info(msg) -> dict:
 
     resolution = f"{width}x{height}" if width and height else "未知"
     return {
-        "title": name or f"media_{msg.id}",
+        "title": title,
         "duration": duration,
         "resolution": resolution,
         "filesize": msg.file.size if msg.file else 0,
         "uploader": getattr(msg.chat, "title", "") if msg.chat else "",
         "ext": ext,
+        "media_type": _media_type(msg),
         "message_id": msg.id,
     }
 

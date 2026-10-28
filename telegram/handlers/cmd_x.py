@@ -24,8 +24,9 @@ async def x_handler(event, arg=None):
         )
         return
 
-    # 默认：整个 arg 当作 URL
-    return await handle_interactive(event, arg.strip())
+    # 允许 "/tw 看看这个 https://…" 这种夹带文字的形式
+    url = external_downloader.extract_supported_url(arg) or arg.strip()
+    return await handle_interactive(event, url)
 
 
 async def handle_interactive(event, url: str):

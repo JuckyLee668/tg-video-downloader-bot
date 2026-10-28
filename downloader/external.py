@@ -5,6 +5,7 @@ import re
 import shutil
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
+from urllib.parse import urlparse
 
 import yt_dlp
 from loguru import logger
@@ -43,12 +44,54 @@ class ExternalDownloader:
             opts["cookiefile"] = self.cookies_file
         return opts
 
+    # Bare domains (and their subdomains) that serve post links.
+    SUPPORTED_HOST_SUFFIXES = ("twitter.com", ".x.com")
+
+    _URL_RE = re.compile(r"https?://[^\s<>\"'）】]+")
+
     @staticmethod
     def is_supported(url: str) -> bool:
-        """Check if the URL is from a supported platform."""
-        return bool(
-            re.search(r"(?:twitter\.com|x\.com)/\w+/status/\d+", url)
-        )
+        """Check if the URL points at a supported Twitter/X post."""
+        if not url:
+            return False
+        candidate = url.strip()
+        if not candidate.lower().startswith(("http://", "https://")):
+            # Users paste "x.com/user/status/123" without a scheme.
+            candidate = "https://" + candidate
+        try:
+            parsed = urlparse(candidate)
+        except ValueError:
+            return False
+        host = (parsed.hostname or "").lower()
+        if not host:
+            return False
+        if not (
+            host == "x.com"
+            or any(host.endswith(suffix) for suffix in ExternalDownloader.SUPPORTED_HOST_SUFFIXES)
+        ):
+            return False
+        # /user/status/123, /i/web/status/123 and legacy /statuses/123
+        return bool(re.search(r"status(?:es)?/\d+", parsed.path))
+
+    @classmethod
+    def extract_supported_url(cls, text: str) -> Optional[str]:
+        """Return the first supported post link inside free-form text.
+
+        Messages rarely contain only the URL ("看看这个 … 谢谢"), and yt-dlp
+        rejects anything that is not a bare URL, so the link has to be pulled
+        out before it is handed over.
+        """
+        if not text:
+            return None
+        for candidate in cls._URL_RE.findall(text):
+            trimmed = candidate.rstrip(".,;:!?)]}")
+            if cls.is_supported(trimmed):
+                return trimmed
+        # No scheme: look for a bare "x.com/…" style token.
+        for token in text.split():
+            if cls.is_supported(token):
+                return token.strip(".,;:!?)]}")
+        return None
 
     async def extract_info(self, url: str) -> Dict[str, Any]:
         """Extract video metadata without downloading.
@@ -198,8 +241,10 @@ class ExternalDownloader:
                 continue
             if f.stem == stem and f.stat().st_size > 0:
                 return f
-            # Also match files that contain the original stem (yt-dlp suffixes)
-            if stem in f.stem and f.stat().st_size > 0:
+            # yt-dlp appends suffixes such as "title.f137.mp4"; require the
+            # name to start with our stem so an unrelated file that merely
+            # contains it is never picked up.
+            if f.stem.startswith(f"{stem}.") and f.stat().st_size > 0:
                 best = best or f
         return best
 

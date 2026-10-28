@@ -10,7 +10,14 @@ from telethon.tl.types import DocumentAttributeVideo, InputPeerChannel
 
 from core.config import config
 from core.database import db_manager
-from core.paths import safe_join_download_path
+from core.paths import (
+    PART_MARKER,
+    part_path_for,
+    part_token,
+    place_file_atomic,
+    safe_join_download_path,
+    strip_part_marker,
+)
 from downloader.aliyundrive_uploader import aliyundrive_uploader
 from downloader.compressor import compressor
 from downloader.engine import download_engine
@@ -26,6 +33,9 @@ class DownloadManager:
         self.forward_peer_cache: dict[str, Any] = {}
         self._progress_msg_ids: dict[str, list[int]] = {}
         self._video_attrs_cache: dict[str, dict] = {}
+        # Strong references to fire-and-forget compression tasks: without them
+        # the event loop may garbage-collect a running task mid-flight.
+        self.background_tasks: set[asyncio.Task] = set()
 
     async def init(self):
         while len(self.worker_tasks) < self.max_concurrent:
@@ -45,8 +55,14 @@ class DownloadManager:
         # File dedup check — skip for external tasks (message_id is a URL hash,
         # not a real Telegram message, so the user may legitimately re-request)
         if config.file_dedup.enabled and not is_external:
-            chat_id = task.get("chat_id") or task.get("channel_id")
-            message_id = task.get("message_id")
+            # The dedup dimension must be the *source* chat + message, not the
+            # user's private chat with the bot.
+            chat_id = (
+                task_data.get("channel_id")
+                or task.get("channel_id")
+                or task.get("chat_id")
+            )
+            message_id = task_data.get("message_id") or task.get("message_id")
             file_id = task.get("file_id")
 
             if config.file_dedup.by_message_id and chat_id and message_id:
@@ -64,7 +80,7 @@ class DownloadManager:
                     return "duplicate"
 
         task_id = await db_manager.add_download_task(task)
-        await self.wake_workers(1)
+        await self.wake_workers(self.max_concurrent)
         return task_id
 
     async def cancel_user_tasks(self, chat_id: str):
@@ -84,7 +100,22 @@ class DownloadManager:
                     task = await db_manager.claim_next_task()
                     if not task:
                         break
-                    await self.process_task(worker_id, task)
+                    try:
+                        await self.process_task(worker_id, task)
+                    except Exception as e:
+                        # process_task has its own error handling; this is a last
+                        # resort so one unexpected error cannot kill the worker.
+                        logger.exception(f"Worker {worker_id} crashed on {task.get('task_id')}: {e}")
+                        try:
+                            await db_manager.update_task_status(
+                                task["task_id"], "failed", f"worker error: {e}"
+                            )
+                        except Exception:
+                            pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.exception(f"Worker {worker_id} loop error: {e}")
             finally:
                 self.queue.task_done()
 
@@ -95,6 +126,8 @@ class DownloadManager:
 
         task_id = task["task_id"]
         task_data = self._loads_task_data(task.get("task_data"))
+        # Must be defined before the try block: the exception handler uses it.
+        is_external = task_data.get("source_type") == "external"
         self.active_tasks.add(task_id)
         deferred_to_background = False  # set True when compression runs in background
 
@@ -104,8 +137,6 @@ class DownloadManager:
                 config.save_path, task.get("file_name", "download.bin")
             )
             save_path.parent.mkdir(parents=True, exist_ok=True)
-
-            is_external = task_data.get("source_type") == "external"
 
             # ── Progress notification setup ──────────────────────────────
             progress_msg_ref = None
@@ -184,7 +215,7 @@ class DownloadManager:
 
             if needs_compression:
                 # 压缩耗时较长，转为后台任务，worker 立即释放去处理下一个文件
-                asyncio.create_task(
+                bg_task = asyncio.create_task(
                     self._post_download_pipeline(
                         tg_clients, actual_path, task, task_data,
                         task_id=task_id,
@@ -194,6 +225,8 @@ class DownloadManager:
                         needs_compression=True,
                     )
                 )
+                self.background_tasks.add(bg_task)
+                bg_task.add_done_callback(self.background_tasks.discard)
                 # Worker 不等压缩完成，直接取下一个任务
                 deferred_to_background = True
                 self.active_tasks.discard(task_id)
@@ -212,8 +245,9 @@ class DownloadManager:
         except FloodWaitError as e:
             wait_seconds = int(getattr(e, "seconds", 30))
             logger.warning(f"Flood wait for task {task_id}: {wait_seconds}s")
-            await db_manager.requeue_task(task_id, f"Flood wait {wait_seconds}s")
-            asyncio.create_task(self._wake_after(wait_seconds + 1))
+            await db_manager.requeue_task(
+                task_id, f"Flood wait {wait_seconds}s", delay_seconds=wait_seconds + 1
+            )
         except Exception as e:
             # 外部下载的永久错误不重试
             if is_external and ("文件为空" in str(e) or "无法提取" in str(e)):
@@ -224,8 +258,9 @@ class DownloadManager:
                 wait_seconds = self._parse_flood_wait_seconds(str(e))
                 if wait_seconds:
                     logger.warning(f"Flood wait text for task {task_id}: {wait_seconds}s")
-                    await db_manager.requeue_task(task_id, f"Flood wait {wait_seconds}s")
-                    asyncio.create_task(self._wake_after(wait_seconds + 1))
+                    await db_manager.requeue_task(
+                        task_id, f"Flood wait {wait_seconds}s", delay_seconds=wait_seconds + 1
+                    )
                 else:
                     logger.error(f"Task failed: {task_id}, error: {e}")
                     await db_manager.update_task_status(task_id, "failed", str(e))
@@ -289,6 +324,18 @@ class DownloadManager:
 
         return download_client, message_obj
 
+    @staticmethod
+    def _discard_part_files(directory: Path, token: str | None) -> None:
+        """Delete the temp files of one download, matched by its own token."""
+        if not token:
+            return
+        for leftover in Path(directory).glob(f"*{PART_MARKER}{token}*"):
+            try:
+                if leftover.is_file():
+                    leftover.unlink()
+            except OSError as e:
+                logger.debug(f"Could not remove temp file {leftover.name}: {e}")
+
     async def _download_if_needed(
         self,
         client,
@@ -300,42 +347,57 @@ class DownloadManager:
         progress_msg_ref=None,
     ) -> Path:
         expected_size = int(task.get("file_size") or 0)
+        # Downloads never write save_path directly any more (see below), so a
+        # file sitting there is always complete and safe to reuse.
         if save_path.exists() and expected_size > 0 and save_path.stat().st_size == expected_size:
             logger.info(f"Existing complete file found, skipping download: {save_path.name}")
             return save_path
 
-        actual_path = await download_engine.download_via_telethon(
-            client,
-            message,
-            str(save_path),
-            self.create_progress_callback(
-                task["task_id"],
-                task.get("file_name", ""),
-                bot_client,
-                requester_chat_id,
-                progress_msg_ref,
-            ),
-        )
-        if actual_path is None:
-            raise RuntimeError(f"Download returned None: {save_path}")
+        temp_path = part_path_for(save_path)
+        try:
+            downloaded = await download_engine.download_via_telethon(
+                client,
+                message,
+                str(temp_path),
+                self.create_progress_callback(
+                    task["task_id"],
+                    task.get("file_name", ""),
+                    bot_client,
+                    requester_chat_id,
+                    progress_msg_ref,
+                ),
+            )
+            if downloaded is None:
+                raise RuntimeError(f"Download returned None: {save_path}")
 
-        # Telethon's download_media may add extension; use the actual path returned
-        actual_path = Path(actual_path)
-        if not actual_path.exists() or actual_path.stat().st_size == 0:
-            raise RuntimeError(f"Download finished but file is missing or empty: {actual_path}")
+            # Telethon may append the extension it derives from the mime type;
+            # stripping the token recovers it, which also covers save paths that
+            # had no extension at all ("video" -> "video.mp4").
+            downloaded = Path(downloaded)
+            if not downloaded.exists() or downloaded.stat().st_size == 0:
+                raise RuntimeError(
+                    f"Download finished but file is missing or empty: {downloaded}"
+                )
 
-        # If Telethon didn't add an extension, try to infer one from the message
-        if not actual_path.suffix and message.file and message.file.mime_type:
-            ext = self._mime_to_ext(message.file.mime_type)
-            if ext:
-                new_path = actual_path.with_suffix(ext)
-                actual_path.rename(new_path)
-                actual_path = new_path
-                logger.info(f"Added inferred extension {ext} -> {actual_path.name}")
+            desired_path = strip_part_marker(downloaded)
+            if not desired_path.suffix and message.file and message.file.mime_type:
+                ext = self._mime_to_ext(message.file.mime_type)
+                if ext:
+                    desired_path = desired_path.with_suffix(ext)
+                    logger.info(f"Added inferred extension {ext} -> {desired_path.name}")
 
-        # If Telethon saved to a different path than save_path, remove the original placeholder
-        if actual_path != save_path and save_path.exists() and save_path.stat().st_size == 0:
-            save_path.unlink(missing_ok=True)
+            actual_path = place_file_atomic(
+                downloaded,
+                desired_path,
+                known_size=downloaded.stat().st_size,
+                reuse_same_size=True,
+            )
+            if actual_path != desired_path:
+                logger.info(
+                    f"Name already taken, kept both files: {desired_path.name} -> {actual_path.name}"
+                )
+        finally:
+            self._discard_part_files(save_path.parent, part_token(temp_path))
 
         # ── Smart rename ──────────────────────────────────────────────
         if config.file_rename.enabled:
@@ -385,15 +447,9 @@ class DownloadManager:
         new_path.parent.mkdir(parents=True, exist_ok=True)
 
         if new_path != file_path:
-            if new_path.exists():
-                counter = 1
-                stem = Path(new_name).stem
-                suffix = Path(new_name).suffix
-                while (file_path.parent / f"{stem}_{counter}{suffix}").exists():
-                    counter += 1
-                new_path = file_path.parent / f"{stem}_{counter}{suffix}"
-
-            file_path.rename(new_path)
+            # rename() silently replaces an existing destination, so a pattern
+            # without a unique placeholder could destroy another worker's file.
+            new_path = place_file_atomic(file_path, new_path)
             logger.info(f"Smart renamed: {file_path.name} -> {new_path.name}")
 
         return new_path
@@ -420,10 +476,23 @@ class DownloadManager:
             progress_msg_ref,
         )
 
-        actual_path_str = await external_downloader.download(
-            url, str(save_path), progress_callback=progress_callback
-        )
-        actual_path = Path(actual_path_str)
+        # Give yt-dlp a unique name too: it writes to exactly the path it is
+        # given and finds its own "name.f137.mp4" fragments by scanning the
+        # directory, so a shared name leaks fragments between tasks.
+        temp_path = part_path_for(save_path)
+        try:
+            actual_path_str = await external_downloader.download(
+                url, str(temp_path), progress_callback=progress_callback
+            )
+            downloaded = Path(actual_path_str)
+            desired_path = strip_part_marker(downloaded)
+            actual_path = place_file_atomic(downloaded, desired_path)
+            if actual_path != desired_path:
+                logger.info(
+                    f"Name already taken, kept both files: {desired_path.name} -> {actual_path.name}"
+                )
+        finally:
+            self._discard_part_files(save_path.parent, part_token(temp_path))
 
         # Smart rename if configured
         if config.file_rename.enabled and actual_path.exists():
@@ -493,15 +562,9 @@ class DownloadManager:
         new_path.parent.mkdir(parents=True, exist_ok=True)
 
         if new_path != file_path:
-            if new_path.exists():
-                counter = 1
-                stem = Path(new_name).stem
-                suffix = Path(new_name).suffix
-                while (file_path.parent / f"{stem}_{counter}{suffix}").exists():
-                    counter += 1
-                new_path = file_path.parent / f"{stem}_{counter}{suffix}"
-
-            file_path.rename(new_path)
+            # Never overwrite: two videos from the same uploader/date can expand
+            # to the same pattern-generated name.
+            new_path = place_file_atomic(file_path, new_path)
             logger.info(f"Smart renamed (external): {file_path.name} -> {new_path.name}")
 
         return new_path
@@ -598,13 +661,22 @@ class DownloadManager:
                 )
 
             # ── Forward ────────────────────────────────────────────────
+            # Uploading a large file can take many minutes; without this the row
+            # stays at "downloading 100%" for the whole upload.
+            if task_data.get("forward_target"):
+                await db_manager.update_task_status(task["task_id"], "forwarding")
             await self._forward_if_requested(tg_clients, actual_path, task, task_data)
 
             # ── Cloud / local forward ──────────────────────────────────
-            cloud_enabled = config.aliyundrive_upload.enabled
+            action = task_data.get("action")
+            if action is None:
+                # Legacy tasks (e.g. channel watch) have no explicit action and
+                # keep the old global-switch behaviour.
+                cloud_enabled = config.aliyundrive_upload.enabled
+            else:
+                cloud_enabled = action in ("cloud", "all")
             local_enabled = config.local_forward.enabled and bool(config.local_forward.target_chat)
             if is_external:
-                action = task_data.get("action", "download")
                 cloud_enabled = action in ("cloud", "all")
                 local_enabled = False
 
@@ -640,8 +712,9 @@ class DownloadManager:
                 logger.warning(
                     f"Flood wait in post-download pipeline for task {task_id}: {wait_seconds}s"
                 )
-                await db_manager.requeue_task(task_id, f"Flood wait {wait_seconds}s")
-                asyncio.create_task(self._wake_after(wait_seconds + 1))
+                await db_manager.requeue_task(
+                    task_id, f"Flood wait {wait_seconds}s", delay_seconds=wait_seconds + 1
+                )
             else:
                 logger.error(f"Post-download pipeline failed for task {task_id}: {e}")
                 await db_manager.update_task_status(task_id, "failed", str(e))
@@ -1153,21 +1226,30 @@ class DownloadManager:
 
         Returns the path to the JPEG thumbnail file, or None if unavailable.
         """
+        thumb_dir = Path(config.save_path).parent / ".tg_thumbs"
+        temp_thumb = None
         try:
-            result = await client.download_media(message, thumb=-1)
+            thumb_dir.mkdir(parents=True, exist_ok=True)
+            dest = thumb_dir / f"thumb_{task_id}.jpg"
+            # Let Telethon write to a unique name: given a free hand it derives
+            # the file name from the document, so two workers handling
+            # same-named videos would race on one thumbnail file.
+            temp_thumb = part_path_for(dest)
+            result = await client.download_media(message, file=str(temp_thumb), thumb=-1)
             if result and Path(result).stat().st_size > 0:
-                # Move to a stable location keyed by task_id so it doesn't
-                # conflict with the download engine's temp paths.
-                thumb_dir = Path(config.save_path).parent / ".tg_thumbs"
-                thumb_dir.mkdir(parents=True, exist_ok=True)
-                dest = thumb_dir / f"thumb_{task_id}.jpg"
-                src = Path(result)
-                if src != dest:
-                    import os
-                    os.rename(str(src), str(dest))
+                # dest belongs to this task alone, so replacing it is safe.
+                Path(result).replace(dest)
                 return str(dest)
         except Exception as e:
             logger.debug(f"Failed to download thumb for task {task_id}: {e}")
+        finally:
+            if temp_thumb is not None:
+                token = part_token(temp_thumb)
+                for leftover in thumb_dir.glob(f"*{PART_MARKER}{token}*"):
+                    try:
+                        leftover.unlink()
+                    except OSError:
+                        pass
         return None
 
     @staticmethod
